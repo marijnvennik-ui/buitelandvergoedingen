@@ -13,8 +13,16 @@ bruto_maand = st.sidebar.number_input("Bruto maandloon beide constructies (€)"
 weken = st.sidebar.slider("Periode (weken)", min_value=1, max_value=12, value=12, step=1)
 
 # Belastingtarieven
-belasting_normaal = st.sidebar.slider("Belastingpercentage normaal (%)", min_value=0, max_value=60, value=37, step=1) / 100
-belasting_hoog = st.sidebar.slider("Belastingpercentage overuren/weekend (%)", min_value=0, max_value=60, value=49.5, step=0.5) / 100
+belasting_normaal = st.sidebar.slider(
+    "Belastingpercentage normaal (%)",
+    min_value=0, max_value=60, value=37, step=1
+) / 100
+
+belasting_hoog = st.sidebar.slider(
+    "Belastingpercentage overuren/weekend (%)",
+    min_value=0.0, max_value=60.0, value=49.5, step=0.5
+) / 100
+
 
 # Constructie A
 vergoed_A_netto_per_dag = st.sidebar.slider("Constructie A: Netto vergoeding per dag (€)", min_value=0, max_value=500, value=50, step=5)
