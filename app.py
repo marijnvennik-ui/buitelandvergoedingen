@@ -113,7 +113,7 @@ for i in range(weken):
     cumul_Oude.append(cumul_Oude[-1] + netto_week_Oude)
 
 # -----------------------------
-# Dataframe & grafiek
+# Dataframe & grafieken
 # -----------------------------
 weeks = list(range(0, weken + 1))
 df = pd.DataFrame({
@@ -125,7 +125,7 @@ df = pd.DataFrame({
 st.subheader("📊 Resultaten per week")
 st.dataframe(df.style.format("{:.2f}"))
 
-# Cumulatieve lijngrafiek
+# Cumulatieve grafiek
 fig, ax = plt.subplots(figsize=(8, 5))
 ax.plot(df["Week"], df["Nieuwe constructie (cumulatief netto)"], label="Nieuwe constructie", linewidth=2)
 ax.plot(df["Week"], df["Oude constructie (cumulatief netto)"], label="Oude constructie", linewidth=2)
@@ -136,7 +136,7 @@ ax.legend()
 ax.grid(True)
 st.pyplot(fig)
 
-# Verschil grafiek
+# Verschilgrafiek
 df["Verschil (Oude - Nieuwe)"] = df["Oude constructie (cumulatief netto)"] - df["Nieuwe constructie (cumulatief netto)"]
 st.subheader("📈 Verschil per week (Oude - Nieuwe)")
 fig2, ax2 = plt.subplots(figsize=(8, 4))
@@ -155,11 +155,11 @@ else:
     st.warning(f"⚠️ Nieuwe constructie levert na {weken} weken **€{abs(verschil_totaal):,.2f}** meer op.")
 
 # -----------------------------
-# Staafdiagram week 1
+# Staafdiagram week 1 met labels
 # -----------------------------
 st.subheader("📊 Inkomenscomponenten per constructie (week 1)")
 
-# ---- Nieuwe constructie week 1 ----
+# Componentberekening Nieuwe
 bruto_normaal = werkdagen * uren_per_dag * bruto_uurloon
 netto_normaal = bruto_normaal * (1 - belasting_normaal)
 bruto_overuren_week = werkdagen * overuren_per_weekdag * bruto_uurloon
@@ -175,7 +175,7 @@ netto_dagvergoeding = vergoed_Nieuwe_netto_per_dag * dagen_per_week
 componenten_Nieuwe = [netto_normaal, netto_overuren_week, netto_zaterdag, netto_dagvergoeding]
 labels_Nieuwe = ["Normaal loon", "Overuren", "Zaterdag extra", "Dagvergoeding"]
 
-# ---- Oude constructie week 1 ----
+# Componentberekening Oude
 toeslag_werkdagen = werkdagen * uren_per_dag * bruto_uurloon * (bonus_multiplier_Oude - 1)
 bruto_werkdagen = werkdagen * uren_per_dag * bruto_uurloon
 netto_werkdagen = (bruto_werkdagen + toeslag_werkdagen) * (1 - belasting_normaal)
@@ -194,19 +194,24 @@ netto_vergoed = dagen_per_week * vergoed_Oude_bruto_per_dag * (1 - belasting_nor
 componenten_Oude = [netto_werkdagen, netto_overuren_week_Oude, netto_zaterdag_totaal, netto_vergoed]
 labels_Oude = ["Normaal loon + toeslag", "Overuren", "Zaterdag + toeslag", "Dagvergoeding"]
 
-# ---- Staafdiagram week 1 ----
+# Staafdiagram
 x = np.arange(2)
 width = 0.5
+kleuren = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 fig3, ax3 = plt.subplots(figsize=(8,5))
-# Nieuwe constructie
+
+# Nieuwe
 bottom = 0
-for comp, label, color in zip(componenten_Nieuwe, labels_Nieuwe, ["#1f77b4","#ff7f0e","#2ca02c","#d62728"]):
-    ax3.bar(x[0], comp, bottom=bottom, label=label, color=color)
+for comp, label, color in zip(componenten_Nieuwe, labels_Nieuwe, kleuren):
+    bar = ax3.bar(x[0], comp, bottom=bottom, label=label, color=color)
+    ax3.text(x[0], bottom + comp/2, f"{comp:.0f}", ha='center', va='center', color='white', fontsize=10, fontweight='bold')
     bottom += comp
-# Oude constructie
+
+# Oude
 bottom = 0
-for comp, label, color in zip(componenten_Oude, labels_Oude, ["#1f77b4","#ff7f0e","#2ca02c","#d62728"]):
-    ax3.bar(x[1], comp, bottom=bottom, label=label, color=color)
+for comp, label, color in zip(componenten_Oude, labels_Oude, kleuren):
+    bar = ax3.bar(x[1], comp, bottom=bottom, label=label, color=color)
+    ax3.text(x[1], bottom + comp/2, f"{comp:.0f}", ha='center', va='center', color='white', fontsize=10, fontweight='bold')
     bottom += comp
 
 ax3.set_xticks(x)
@@ -216,3 +221,15 @@ ax3.set_title("Inkomenscomponenten week 1 per constructie")
 ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
 ax3.grid(True, axis='y', linestyle='--', alpha=0.7)
 st.pyplot(fig3)
+
+# -----------------------------
+# Tabel met bedragen
+# -----------------------------
+st.subheader("💰 Specificatie bedragen (week 1)")
+df_week1 = pd.DataFrame({
+    "Component": labels_Nieuwe,
+    "Nieuwe constructie (€)": [round(v,2) for v in componenten_Nieuwe],
+    "Oude constructie (€)": [round(v,2) for v in componenten_Oude]
+})
+df_week1["Verschil (Oude - Nieuwe) (€)"] = df_week1["Oude constructie (€)"] - df_week1["Nieuwe constructie (€)"]
+st.dataframe(df_week1.style.format("{:.2f}"))
