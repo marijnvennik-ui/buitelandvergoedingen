@@ -94,7 +94,6 @@ for dag in daterange(startdatum, einddatum):
 
     # Zaterdag
     elif weekdag == 5:
-        # Alleen werken indien aangevinkt
         if weekend_werken:
             bruto_extra = uren_per_dag * bruto_uurloon * zaterdag_multiplier
             netto += bruto_extra * (1 - belasting_bijzonder)
@@ -111,21 +110,16 @@ for dag in daterange(startdatum, einddatum):
     netto_old += vergoed_Oude_bruto_per_dag * (1 - belasting_normaal)
 
     if weekdag < 5:
-        # Normaal loon + toeslag
         bruto_total = bruto_basis_old * bonus_multiplier_Oude
         netto_old += bruto_total * (1 - belasting_normaal)
         netto_old += overuren_old * (1 - belasting_bijzonder)
 
     elif weekdag == 5:
-        # 75% loon + zaterdagtoeslag + eventueel extra uren
         bruto_zat = uren_per_dag * bruto_uurloon * zondag_multiplier
         netto_old += bruto_zat * (1 - belasting_bijzonder)
         if weekend_werken:
             bruto_extra_zat = extra_zaterdag_uren * bruto_uurloon * zaterdag_multiplier
             netto_old += bruto_extra_zat * (1 - belasting_bijzonder)
-
-    # Zondag → alleen dagvergoeding
-    # (geen extra's)
 
     records.append({
         "Datum": dag,
@@ -137,6 +131,11 @@ for dag in daterange(startdatum, einddatum):
     })
 
 df = pd.DataFrame(records)
+
+if df.empty:
+    st.warning("Geen data om te tonen — controleer het datumbereik.")
+    st.stop()
+
 df["Cumulatief Nieuwe"] = df["Nieuwe constructie (netto)"].cumsum()
 df["Cumulatief Oude"] = df["Oude constructie (netto)"].cumsum()
 df["Cumulatief Verschil"] = df["Verschil (Oude - Nieuwe)"].cumsum()
@@ -145,7 +144,15 @@ df["Cumulatief Verschil"] = df["Verschil (Oude - Nieuwe)"].cumsum()
 # Resultatenoverzicht
 # -----------------------------
 st.subheader("📅 Dagelijkse resultaten")
-st.dataframe(df[["Datum", "Dag", "Nieuwe constructie (netto)", "Oude constructie (netto)", "Verschil (Oude - Nieuwe)"]].style.format("{:.2f}"))
+
+kolommen = ["Datum", "Dag", "Nieuwe constructie (netto)", "Oude constructie (netto)", "Verschil (Oude - Nieuwe)"]
+st.dataframe(
+    df[kolommen].style.format({
+        "Nieuwe constructie (netto)": "{:.2f}",
+        "Oude constructie (netto)": "{:.2f}",
+        "Verschil (Oude - Nieuwe)": "{:.2f}"
+    })
+)
 
 # -----------------------------
 # Cumulatieve grafiek
@@ -170,7 +177,7 @@ if weekend_df.empty:
     st.info("Geen weekenddagen in deze periode.")
 else:
     totaal_verschil_weekend = weekend_df["Verschil (Oude - Nieuwe)"].sum()
-    aantal_weekenden = len(weekend_df) / 2  # ongeveer 2 dagen per weekend
+    aantal_weekenden = len(weekend_df) / 2  # gemiddeld 2 weekenddagen
     gemiddeld_per_weekend = totaal_verschil_weekend / max(aantal_weekenden, 1)
 
     st.write(f"💡 Totaal verschil op weekenddagen: **€{totaal_verschil_weekend:,.2f}**")
