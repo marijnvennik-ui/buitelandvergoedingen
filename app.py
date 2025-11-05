@@ -196,7 +196,6 @@ labels_Oude = ["Normaal loon + toeslag", "Overuren", "Zaterdag + toeslag", "Dagv
 
 # Staafdiagram
 x = np.arange(2)
-width = 0.5
 kleuren = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 fig3, ax3 = plt.subplots(figsize=(8,5))
 
@@ -226,10 +225,20 @@ st.pyplot(fig3)
 # Tabel met bedragen
 # -----------------------------
 st.subheader("💰 Specificatie bedragen (week 1)")
+
 df_week1 = pd.DataFrame({
     "Component": labels_Nieuwe,
-    "Nieuwe constructie (€)": [round(v,2) for v in componenten_Nieuwe],
-    "Oude constructie (€)": [round(v,2) for v in componenten_Oude]
+    "Nieuwe constructie (€)": [round(v, 2) for v in componenten_Nieuwe],
+    "Oude constructie (€)": [round(v, 2) for v in componenten_Oude]
 })
-df_week1["Verschil (Oude - Nieuwe) (€)"] = df_week1["Oude constructie (€)"] - df_week1["Nieuwe constructie (€)"]
-st.dataframe(df_week1.style.format("{:.2f}"))
+
+df_week1["Verschil (Oude - Nieuwe) (€)"] = (
+    df_week1["Oude constructie (€)"] - df_week1["Nieuwe constructie (€)"]
+)
+
+# ✅ Format alleen numerieke kolommen – voorkomt ValueError
+st.dataframe(df_week1.style.format({
+    "Nieuwe constructie (€)": "{:.2f}",
+    "Oude constructie (€)": "{:.2f}",
+    "Verschil (Oude - Nieuwe) (€)": "{:.2f}"
+}))
