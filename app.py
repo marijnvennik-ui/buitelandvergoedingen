@@ -7,8 +7,8 @@ st.set_page_config(page_title="Reisvergoeding Calculator PRO", layout="wide")
 
 st.title("📊 Reisvergoeding Analyse: Nieuw vs. Oud")
 st.markdown("""
-In deze tool vergelijken we de **Nieuwe Constructie** (Netto dagvergoeding) 
-met de **Oude Constructie** (75% loon doorbetaling in het weekend).
+Vergelijking tussen de **Nieuwe Constructie** (Netto dagvergoeding) 
+en de **Oude Constructie** (Loon + weekendvergoedingen).
 """)
 
 # --- SIDEBAR INSTELLINGEN ---
@@ -18,10 +18,13 @@ with st.sidebar:
     eind_datum = st.date_input("Einddatum reis", (datetime.now() + timedelta(days=6)).date())
     
     st.divider()
-    st.subheader("Tarieven")
+    st.subheader("Tarieven & Factoren")
     dagtarief_netto = st.number_input("Netto dagvergoeding (€)", value=50.0)
     basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=20.0)
-    overwerk_factor = st.slider("Overwerk factor Zaterdag", 1.0, 2.0, 1.5, 0.1)
+    
+    st.info("Oude Constructie Factoren:")
+    doordeweeks_toeslag = st.slider("Doordeweekse toeslag (bijv. 30%)", 1.0, 2.0, 1.3, 0.05)
+    overwerk_factor_zat = st.slider("Overwerk factor Zaterdag", 1.0, 2.0, 1.5, 0.1)
 
 # --- DATA VOORBEREIDING ---
 def genereer_datum_bereik(start, eind):
@@ -38,14 +41,10 @@ def genereer_datum_bereik(start, eind):
         huidige += timedelta(days=1)
     return pd.DataFrame(dagen)
 
-# Maak de interactieve tabel
 if start_datum <= eind_datum:
     df_input = genereer_datum_bereik(start_datum, eind_datum)
     
-    st.subheader("1. Voer je gewerkte uren in")
-    st.info("Vink 'Gewerkt' aan voor de zaterdag om overuren te berekenen. Laat het uit voor de 75% vergoeding.")
-    
-    # Gebruik data_editor voor interactie
+    st.subheader("1. Controleer gewerkte uren")
     edited_df = st.data_editor(
         df_input,
         column_config={
@@ -61,58 +60,53 @@ if start_datum <= eind_datum:
     def bereken_logica(row):
         is_zaterdag = row['Datum'].weekday() == 5
         is_zondag = row['Datum'].weekday() == 6
+        is_doordeweeks = row['Datum'].weekday() < 5
         
-        # NIEUWE CONSTRUCTIE
-        # Altijd netto dagvergoeding (ongeacht werk of weekend)
+        # 1. NIEUWE CONSTRUCTIE
+        # Altijd de vaste netto dagvergoeding [cite: 4]
         nieuw_totaal = dagtarief_netto
         
-        # OUDE CONSTRUCTIE
+        # 2. OUDE CONSTRUCTIE
         oud_totaal = 0
-        overwerk_loon = 0
         
         if is_zaterdag:
             if row['Gewerkt']:
-                # Zaterdag gewerkt: Elk uur is overwerk (bijzonder tarief)
-                overwerk_loon = row['Uren'] * (basis_uurloon * overwerk_factor)
-                oud_totaal = overwerk_loon
+                # Zaterdag gewerkt: Elk uur is overwerk 
+                oud_totaal = row['Uren'] * (basis_uurloon * overwerk_factor_zat)
             else:
-                # Zaterdag NIET gewerkt: 75% van 8 uur basisloon
+                # Zaterdag NIET gewerkt: 75% vergoeding [cite: 9]
                 oud_totaal = (basis_uurloon * 8) * 0.75
         elif is_zondag:
-            # Zondag: Altijd 75% (tenzij er gewerkt wordt, maar conform jouw info is dit voor zaterdag)
+            # Zondag: Altijd 75% vergoeding (indien niet gewerkt) [cite: 10]
             oud_totaal = (basis_uurloon * 8) * 0.75
-        else:
-            # Doordeweeks: Basisloon (voor de vergelijking houden we dit op 0 of basis)
-            # In dit model focussen we op de extra's/verschillen
-            oud_totaal = 0 
+        elif is_doordeweeks:
+            # Doordeweeks: Basisloon + de 30% toeslag
+            oud_totaal = row['Uren'] * (basis_uurloon * doordeweeks_toeslag)
 
-        return pd.Series([nieuw_totaal, oud_totaal, overwerk_loon])
+        return pd.Series([nieuw_totaal, oud_totaal])
 
-    # Toepassen logica
-    edited_df[['Nieuw (Netto)', 'Oud (Weekend/Extra)', 'Zaterdag Overwerk']] = edited_df.apply(bereken_logica, axis=1)
+    # Berekeningen uitvoeren
+    edited_df[['Nieuw (Netto)', 'Oud (Incl. Toeslagen)']] = edited_df.apply(bereken_logica, axis=1)
 
-    # --- RESULTATEN ---
+    # --- DISPLAY ---
     st.divider()
-    st.subheader("2. Analyse Resultaten")
+    st.subheader("2. Resultaten & Vergelijking")
     
-    col1, col2, col3 = st.columns(3)
     totaal_nieuw = edited_df['Nieuw (Netto)'].sum()
-    totaal_oud = edited_df['Oud (Weekend/Extra)'].sum()
+    totaal_oud = edited_df['Oud (Incl. Toeslagen)'].sum()
     verschil = totaal_nieuw - totaal_oud
 
-    col1.metric("Totaal Nieuw (Netto)", f"€ {totaal_nieuw:,.2f}")
-    col2.metric("Totaal Oud (Incl. 75%)", f"€ {totaal_oud:,.2f}")
-    col3.metric("Verschil", f"€ {verschil:,.2f}", delta=f"{verschil:,.2f}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Totaal Nieuw", f"€ {totaal_nieuw:,.2f}")
+    c2.metric("Totaal Oud", f"€ {totaal_oud:,.2f}")
+    c3.metric("Verschil", f"€ {verschil:,.2f}", delta=f"{verschil:,.2f}")
 
-    # Tabel weergave met formatting fix
+    # Formattering fix voor de tabel (voorkomt de ValueError uit het transcript) 
+    numeric_cols = ['Nieuw (Netto)', 'Oud (Incl. Toeslagen)']
     st.dataframe(
-        edited_df.style.format({
-            "Nieuw (Netto)": "€ {:.2f}",
-            "Oud (Weekend/Extra)": "€ {:.2f}",
-            "Zaterdag Overwerk": "€ {:.2f}"
-        }),
+        edited_df.style.format({col: "€ {:.2f}" for col in numeric_cols}),
         use_container_width=True
     )
 
 else:
-    st.error("Selecteer een geldige datumreeks.")
+    st.error("De einddatum moet na de startdatum liggen.")
