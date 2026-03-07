@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # --- CONFIGURATIE ---
-st.set_page_config(page_title="Slimme Urenvergelijker", layout="wide")
-st.title("📊 Slimme Urenvergelijker (Project Scan)")
+st.set_page_config(page_title="Dynamische Urenvergelijker", layout="wide")
+st.title("📊 Dynamische Urenvergelijker (Project Scan)")
 
 # --- SIDEBAR: INSTELLINGEN ---
 with st.sidebar:
@@ -17,11 +17,6 @@ with st.sidebar:
     st.divider()
     belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100
     belasting_bijzonder = 0.505 
-    
-    st.divider()
-    st.subheader("Excel Scanner")
-    st.write("In welke kolom begint Maandag 'N'?")
-    start_kolom = st.number_input("Kolom-index (A=0, B=1, C=2, D=3, E=4...)", min_value=1, max_value=20, value=4, step=1)
     
     st.divider()
     st.subheader("Vergoedingen")
@@ -42,7 +37,7 @@ def bereken_reistijd_bruto(minuten, is_weekend, salaris):
 # --- HULPFUNCTIE: VEILIG GETALLEN LEZEN ---
 def safe_float(row, idx):
     try:
-        if idx < len(row):
+        if idx != -1 and idx < len(row):
             val = row.iloc[idx]
             if pd.notna(val):
                 if isinstance(val, str):
@@ -52,76 +47,115 @@ def safe_float(row, idx):
         pass
     return 0.0
 
-# --- EXCEL PARSER (ZOEKT AUTOMATISCH PROJECTEN) ---
-def scan_projecten(file, start_idx):
+# --- EXCEL PARSER (DYNAMISCHE KOLOMHERKENNING) ---
+def scan_projecten_dynamisch(file):
     df_raw = pd.read_excel(file, header=None)
-    gevonden_projecten = {}
     
+    rij_dagen = -1
+    rij_labels = -1
+    
+    # 1. Zoek de header rijen (Dagen en N/O/R/S) in de eerste 30 rijen
+    for i in range(min(30, len(df_raw))):
+        row_vals = [str(x).lower().strip() for x in df_raw.iloc[i].values]
+        if "maandag" in row_vals and "dinsdag" in row_vals:
+            rij_dagen = i
+            rij_labels = i + 1 # De N, O, R labels staan er vrijwel altijd direct onder
+            break
+            
+    if rij_dagen == -1:
+        st.error("Kon de dagen (Maandag, Dinsdag, etc.) niet vinden in het bestand.")
+        return None, None
+        
+    # 2. Map de kolommen per dag
+    dagen_namen = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
+    dag_kolommen = {dag: {"N": -1, "O": -1, "R": -1} for dag in dagen_namen}
+    
+    dag_starts = {}
+    for col_idx, val in enumerate(df_raw.iloc[rij_dagen].values):
+        val_str = str(val).lower().strip()
+        if val_str in dagen_namen:
+            dag_starts[val_str] = col_idx
+            
+    # Bepaal het bereik van elke dag en zoek N, O, R
+    sorted_dagen = sorted(dag_starts.items(), key=lambda x: x[1])
+    for i, (dag, start_col) in enumerate(sorted_dagen):
+        end_col = sorted_dagen[i+1][1] if i + 1 < len(sorted_dagen) else len(df_raw.columns)
+        
+        for col_idx in range(start_col, end_col):
+            if col_idx < len(df_raw.iloc[rij_labels]):
+                label = str(df_raw.iloc[rij_labels, col_idx]).upper().strip()
+                if label == "N" or label.startswith("N"): dag_kolommen[dag]["N"] = col_idx
+                elif label == "O" or label.startswith("O"): dag_kolommen[dag]["O"] = col_idx
+                elif label == "R" or label.startswith("R"): dag_kolommen[dag]["R"] = col_idx
+
+    # 3. Zoek de projecten met uren
+    gevonden_projecten = {}
     for index, row in df_raw.iterrows():
+        # Sla de header rijen over
+        if index <= rij_labels:
+            continue
+            
         col0 = str(row.iloc[0]).strip()
         col1 = str(row.iloc[1]).strip() if len(row) > 1 else ""
         
-        # Sla lege rijen of duidelijke headers over
         if col0.lower() in ['nan', 'none', '', 'project', 'totaal', 'datum', 'medewerker']:
             continue
             
-        # Controleer of er in de uren-kolommen (Ma t/m Zo) ergens een getal staat groter dan 0
         heeft_uren = False
-        for col_idx in range(start_idx, min(start_idx + 21, len(row))):
-            if safe_float(row, col_idx) > 0:
-                heeft_uren = True
-                break
+        # Check of in een van de gevonden N, O, R kolommen een getal staat
+        for dag, kolommen in dag_kolommen.items():
+            for type_uur, col_idx in kolommen.items():
+                if col_idx != -1 and safe_float(row, col_idx) > 0:
+                    heeft_uren = True
+                    break
+            if heeft_uren: break
                 
         if heeft_uren:
-            # Maak een herkenbare naam voor in het menu
             naam = f"Rij {index+1}: {col0}"
             if col1.lower() not in ['nan', 'none', '']:
                 naam += f" - {col1}"
             gevonden_projecten[naam] = row
             
-    return gevonden_projecten
+    return gevonden_projecten, dag_kolommen
 
 # --- APP FLOW & DATA INITIALISATIE ---
 uploaded_file = st.file_uploader("Sleep hier je .xlsx urenlijst naar binnen", type="xlsx")
 
 if uploaded_file:
-    projecten_dict = scan_projecten(uploaded_file, int(start_kolom))
+    projecten_dict, mapping = scan_projecten_dynamisch(uploaded_file)
     
-    if projecten_dict:
-        st.success(f"Er zijn {len(projecten_dict)} projecten met uren gevonden in dit bestand!")
+    if projecten_dict and mapping:
+        st.success(f"Er zijn {len(projecten_dict)} projecten met uren gevonden!")
         
-        # Laat de gebruiker de projecten kiezen
         geselecteerde_projecten = st.multiselect(
             "Selecteer het project (of meerdere) om te analyseren:",
             options=list(projecten_dict.keys()),
-            default=list(projecten_dict.keys())[0] # Selecteer standaard de eerste
+            default=list(projecten_dict.keys())[0]
         )
         
-        # Aggregeer de uren van de geselecteerde projecten
-        dagen_namen = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+        # Aggregeer de uren met de dynamische kolom-mapping
+        dagen_display = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
         geaggregeerde_data = []
         
-        for i, dag in enumerate(dagen_namen):
+        for dag in dagen_display:
             n_tot, o_tot, r_tot = 0.0, 0.0, 0.0
+            dag_lower = dag.lower()
             
             for p_naam in geselecteerde_projecten:
                 row = projecten_dict[p_naam]
-                idx_n = int(start_kolom) + (i * 3)
-                idx_o = int(start_kolom) + (i * 3) + 1
-                idx_r = int(start_kolom) + (i * 3) + 2
                 
-                n_tot += safe_float(row, idx_n)
-                o_tot += safe_float(row, idx_o)
-                r_tot += safe_float(row, idx_r)
+                n_tot += safe_float(row, mapping[dag_lower]["N"])
+                o_tot += safe_float(row, mapping[dag_lower]["O"])
+                r_tot += safe_float(row, mapping[dag_lower]["R"])
                 
             geaggregeerde_data.append({"Dag": dag, "N": n_tot, "O": o_tot, "R": r_tot})
             
         st.session_state.df_data = pd.DataFrame(geaggregeerde_data)
         
     else:
-        st.error("Geen rijen gevonden met projectnummers én uren. Check de start-kolom in de zijbalk.")
+        st.error("Bestand uitgelezen, maar geen werkbare uren of structuur gevonden.")
 
-# Fallback data als er geen bestand is of bij opstarten
+# Fallback data
 if 'df_data' not in st.session_state:
     st.session_state.df_data = pd.DataFrame([
         {"Dag": d, "N": 0.0, "O": 0.0, "R": 0.0} 
@@ -130,8 +164,7 @@ if 'df_data' not in st.session_state:
 
 # --- TABEL WEERGAVE ---
 st.subheader("1. Urenoverzicht (N, O, R)")
-st.write("De uren van de geselecteerde projecten zijn samengevoegd. Je kunt ze hieronder nog handmatig aanpassen.")
-
+st.write("Uren zijn dynamisch ingelezen. Controleer of alles klopt.")
 edited_df = st.data_editor(
     st.session_state.df_data,
     column_config={
