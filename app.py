@@ -99,7 +99,8 @@ class ExcelParser:
         rij_labels = -1
         for r in range(rij_dagen + 1, min(rij_dagen + 5, len(df))):
             row_vals = df.iloc[r].astype(str).str.upper().str.strip().values
-            if any(re.match(r'^(N|O|R)', v) for v in row_vals):
+            # Check of er tenminste ergens een N, O, R of S staat in deze rij
+            if any(re.match(r'^(N|O|R|S)', v) for v in row_vals):
                 rij_labels = r
                 break
                 
@@ -115,13 +116,17 @@ class ExcelParser:
             
             for col_idx in range(start_col, end_col):
                 val = str(df.iloc[rij_labels, col_idx]).upper().strip()
-                if re.match(r'^N\b', val): mapping[dag]["N"] = col_idx
-                elif re.match(r'^O\b', val): mapping[dag]["O"] = col_idx
-                elif re.match(r'^R\b|R->', val): mapping[dag]["R"] = col_idx
+                
+                # Exclusief en alleen mappen als de letter er écht staat!
+                if val == 'N' or val.startswith('N ') or val.startswith('N-'): 
+                    mapping[dag]["N"] = col_idx
+                elif val == 'O' or val.startswith('O ') or val.startswith('O-'): 
+                    mapping[dag]["O"] = col_idx
+                elif val == 'R' or val.startswith('R ') or val.startswith('R-'): 
+                    mapping[dag]["R"] = col_idx
 
-            if mapping[dag]["N"] == -1: mapping[dag]["N"] = start_col
-            if mapping[dag]["O"] == -1 and start_col + 1 < end_col: mapping[dag]["O"] = start_col + 1
-            if mapping[dag]["R"] == -1 and start_col + 2 < end_col: mapping[dag]["R"] = start_col + 2
+            # GEEN VANGNET MEER! Als een kolom er niet is (bijv. geen R), blijft de index -1.
+            # De extraheer-functie weet dan dat het 0 uren zijn.
 
         return rij_labels, mapping
 
@@ -130,19 +135,17 @@ class ExcelParser:
         df_data = df.iloc[start_rij + 1:]
         
         for index, row in df_data.iterrows():
-            # Negeer alleen de 'totaal' rijen onderaan het document
             row_start = " ".join([str(x).lower() for x in row.iloc[:3] if pd.notna(x)])
             if 'totaal' in row_start or 'datum' in row_start:
                 continue
                 
-            # Verzamel de kolommen die we nodig hebben en vervang KOMMA'S door PUNTEN
             relevant_cols = [c for dag in mapping.values() for c in dag.values() if c != -1]
+            if not relevant_cols:
+                continue
+                
             cell_values = row.iloc[relevant_cols].astype(str).str.replace(',', '.')
-            
-            # Zet om naar nummers. Foute teksten worden NaN, daarna 0.
             uren_in_rij = pd.to_numeric(cell_values, errors='coerce').fillna(0)
             
-            # Als er ergens een getal > 0 staat in N, O of R, is deze rij relevant
             if uren_in_rij.sum() > 0:
                 tekst_delen = [str(x).strip() for x in row.iloc[:8] if pd.notna(x) and str(x).strip().lower() not in ['nan', 'none', '']]
                 project_naam = f"Rij {index+1}: " + " | ".join(tekst_delen)
@@ -150,7 +153,6 @@ class ExcelParser:
                     project_naam = f"Rij {index+1}: Onbekend Project"
                 
                 for dag, kolommen in mapping.items():
-                    # Haal de specifieke waarden op en handel komma's veilig af
                     n_str = str(row.iloc[kolommen["N"]]).replace(',', '.') if kolommen["N"] != -1 else '0'
                     o_str = str(row.iloc[kolommen["O"]]).replace(',', '.') if kolommen["O"] != -1 else '0'
                     r_str = str(row.iloc[kolommen["R"]]).replace(',', '.') if kolommen["R"] != -1 else '0'
@@ -180,7 +182,6 @@ st.title("📊 Urenvergelijker (Enterprise Edition)")
 
 with st.sidebar:
     st.header("⚙️ Systeem Parameters")
-    # UI Componenten toewijzen aan onze dataclass
     tarieven = Tarieven(
         basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=24.50, step=0.10),
         belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100,
