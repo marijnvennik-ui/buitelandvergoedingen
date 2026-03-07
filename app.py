@@ -2,27 +2,25 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
-from datetime import datetime, timedelta
 
 # --- CONFIGURATIE ---
-st.set_page_config(page_title="Uren & Reisvergelijker Master", layout="wide")
-st.title("📊 PDF Analyse: Vergelijking Nieuw vs. Oud")
+st.set_page_config(page_title="Uren & Reisvergelijker PRO", layout="wide")
+st.title("📊 PDF Uren Analyse (N, O, R)")
 
-# --- SIDEBAR: ALLE TARIEVEN ---
+# --- SIDEBAR: INSTELLINGEN ---
 with st.sidebar:
-    st.header("⚙️ Instellingen")
+    st.header("⚙️ Tarieven & Belasting")
     maandsalaris = st.number_input("Vast maandsalaris (€)", value=3500.0)
     basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=20.0)
     belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100
-    belasting_bijzonder = 0.505 # 50,5%
+    belasting_bijzonder = 0.505
     
     st.divider()
-    st.subheader("Vergoedingen")
     dagtarief_netto = st.number_input("Nieuwe Netto dagvergoeding (€)", value=50.0)
     ovn_week = st.number_input("Oude Overnachting week (€)", value=21.0)
     ovn_weekend = st.number_input("Oude Overnachting weekend (€)", value=28.0)
 
-# --- REISTIJD FORMULE (0.607% / 0.97% / 1.21%) ---
+# --- LOGICA: REISTIJD ---
 def bereken_reistijd_bruto(minuten, is_weekend, salaris):
     uren = minuten / 60
     if not is_weekend:
@@ -32,63 +30,70 @@ def bereken_reistijd_bruto(minuten, is_weekend, salaris):
     else:
         return uren * (0.0121 * salaris)
 
-# --- PDF PARSER (GEOPTIMALISEERD VOOR N, O, R) ---
-def parse_uren_pdf(file):
-    dagen_namen = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-    data = []
+# --- VERBETERDE PDF PARSER (VOOR GESTAPELDE RIJEN) ---
+def extract_data_from_pdf(file):
+    days_data = []
+    days_names = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
     
     with pdfplumber.open(file) as pdf:
-        text = pdf.pages[0].extract_text()
-        # We zoeken de regel die begint met 'totaal'
-        lines = text.split('\n')
-        totaal_line = [l for l in lines if "totaal" in l.lower()]
+        # We extraheren de tabel direct (pdfplumber is goed in tabel-lijnen herkennen)
+        table = pdf.pages[0].extract_table()
         
-        if totaal_line:
-            # Zoek alle getallen (ook met komma's)
-            getallen = re.findall(r"\d+(?:,\d+)?", totaal_line[0])
-            getallen = [g.replace(',', '.') for g in getallen]
-            
-            # Op basis van de PDF snippet: N en R/O staan vaak om en om
-            # We maken een veilige mapping, maar de gebruiker kan editen
-            for i, dag in enumerate(dagen_namen):
-                data.append({
-                    "Dag": dag,
-                    "N (Normaal)": float(getallen[i+1]) if (i+1) < len(getallen) else 0.0,
-                    "O (Overuren)": 0.0,
-                    "R (Reisminuten)": 0.0,
-                    "Gewerkt": False
-                })
-        else:
-            # Fallback leeg schema
-            for dag in dagen_namen:
-                data.append({"Dag": dag, "N (Normaal)": 0.0, "O (Overuren)": 0.0, "R (Reisminuten)": 0.0, "Gewerkt": False})
-    
-    return pd.DataFrame(data)
+        if table:
+            # We zoeken naar de rij waar de uren in staan (vaak onder de dag-headers)
+            # In jouw PDF is dit meestal de rij met het projectnummer
+            for row in table:
+                if row[0] and row[0].isdigit(): # Checkt of eerste cel een projectnummer is
+                    # De kolommen in jouw PDF zijn vaak gegroepeerd per dag
+                    # We mappen de kolommen naar de dagen
+                    for i in range(7):
+                        cell_content = row[i+3] if (i+3) < len(row) else "" # Uren starten vaak bij index 3
+                        if cell_content:
+                            # Split de gestapelde waarden (N, O, R) die pdfplumber vaak als \n ziet
+                            parts = cell_content.split('\n')
+                            n_val = float(parts[0].replace(',', '.')) if len(parts) > 0 and parts[0].strip().replace(',','').isdigit() else 0.0
+                            r_val = float(parts[1].replace(',', '.')) if len(parts) > 1 and parts[1].strip().replace(',','').isdigit() else 0.0
+                            # S overslaan (meestal 3e positie in de stapel)
+                            
+                            days_data.append({
+                                "Dag": days_names[i],
+                                "N (Normaal)": n_val,
+                                "O (Overuren)": 0.0, # Kan ook in parts zitten
+                                "R (Reisminuten)": r_val if r_val > 10 else 0.0, # Filter voor S-vlaggen
+                                "Gewerkt": False
+                            })
+                    break
 
-# --- INTERFACE ---
-uploaded_file = st.file_uploader("Upload urenlijst PDF", type="pdf")
+    if not days_data: # Fallback
+        for name in days_names:
+            days_data.append({"Dag": name, "N (Normaal)": 0.0, "O (Overuren)": 0.0, "R (Reisminuten)": 0.0, "Gewerkt": False})
+    
+    return pd.DataFrame(days_data)
+
+# --- UI ---
+uploaded_file = st.file_uploader("Upload Week PDF", type="pdf")
 
 if uploaded_file:
-    if 'df_data' not in st.session_state:
-        st.session_state.df_data = parse_uren_pdf(uploaded_file)
+    if 'df_uren' not in st.session_state:
+        st.session_state.df_uren = extract_data_from_pdf(uploaded_file)
     
     st.subheader("1. Ingelezen Gegevens (N, O, R)")
-    st.info("Check de waarden. S (standplaats) is genegeerd. Vul bij 'R' de reisminuten in (bijv. 450).")
+    st.info("De software heeft de gestapelde rijen uit de PDF gelezen. Controleer de waarden hieronder.")
     
     edited_df = st.data_editor(
-        st.session_state.df_data,
+        st.session_state.df_uren,
         column_config={
             "Dag": st.column_config.TextColumn(disabled=True),
             "N (Normaal)": st.column_config.NumberColumn("Uren (N)"),
             "O (Overuren)": st.column_config.NumberColumn("Overuren (O)"),
             "R (Reisminuten)": st.column_config.NumberColumn("Reisminuten (R)"),
-            "Gewerkt": st.column_config.CheckboxColumn("Weekend Werk?")
+            "Gewerkt": st.column_config.CheckboxColumn("Weekend Gewerkt?")
         },
         use_container_width=True
     )
 
     # --- BEREKENING ---
-    def calculate_comparison(row):
+    def calculate(row):
         is_weekend = row['Dag'] in ["Zaterdag", "Zondag"]
         uren_totaal = row['N (Normaal)'] + row['O (Overuren)']
         
@@ -113,23 +118,19 @@ if uploaded_file:
             
         return pd.Series([nieuw_totaal, netto_oud, rt_netto])
 
-    edited_df[['Nieuw (Netto)', 'Oud (Netto)', 'Reistijd (Netto)']] = edited_df.apply(calculate_comparison, axis=1)
-    edited_df['Verschil'] = edited_df['Nieuw (Netto)'] - edited_df['Oud (Netto)']
+    edited_df[['Nieuw', 'Oud', 'Reis Netto']] = edited_df.apply(calculate, axis=1)
+    edited_df['Verschil'] = edited_df['Nieuw'] - edited_df['Oud']
 
     # --- TOTALEN ---
     st.divider()
-    t_n = edited_df['Nieuw (Netto)'].sum()
-    t_o = edited_df['Oud (Netto)'].sum()
+    t_n = edited_df['Nieuw'].sum()
+    t_o = edited_df['Oud'].sum()
     
     c1, c2, c3 = st.columns(3)
     c1.metric("Totaal Nieuw", f"€ {t_n:,.2f}")
     c2.metric("Totaal Oud", f"€ {t_o:,.2f}")
-    c3.metric("Resultaat", f"€ {t_n - t_o:,.2f}", delta=f"{t_n - t_o:,.2f}")
+    c3.metric("Netto Verschil", f"€ {t_n - t_o:,.2f}", delta=f"{t_n - t_o:,.2f}")
 
-    st.subheader("Gedetailleerd overzicht")
     st.dataframe(edited_df.style.format({
-        "Nieuw (Netto)": "€ {:.2f}", 
-        "Oud (Netto)": "€ {:.2f}", 
-        "Verschil": "€ {:.2f}",
-        "Reistijd (Netto)": "€ {:.2f}"
-    }).background_gradient(subset=['Verschil'], cmap='RdYlGn'))
+        "Nieuw": "€ {:.2f}", "Oud": "€ {:.2f}", "Reis Netto": "€ {:.2f}", "Verschil": "€ {:.2f}"
+    }))
