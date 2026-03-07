@@ -1,247 +1,280 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+import re
+from dataclasses import dataclass
 
-# --- CONFIGURATIE ---
-st.set_page_config(page_title="Urenvergelijker (Extreme Scan)", layout="wide")
-st.title("📊 Urenvergelijker (Auto-Scan V3)")
-
-# --- SIDEBAR: INSTELLINGEN ---
-with st.sidebar:
-    st.header("⚙️ Salaris & Belasting")
-    basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=24.50, step=0.10)
-    maandsalaris_calc = basis_uurloon * 173.3
-    st.info(f"Berekend maandsalaris: € {maandsalaris_calc:,.2f}")
+# ==========================================
+# 1. DOMEIN LOGICA & INSTELLINGEN
+# ==========================================
+@dataclass
+class Tarieven:
+    basis_uurloon: float
+    belasting_normaal: float
+    belasting_bijzonder: float
+    dagtarief_netto: float
+    ovn_week: float
+    ovn_weekend: float
     
-    st.divider()
-    belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100
-    belasting_bijzonder = 0.505 
-    
-    st.divider()
-    st.subheader("Vergoedingen")
-    dagtarief_netto = st.number_input("Nieuwe Netto dagvergoeding (€)", value=50.0)
-    ovn_week = st.number_input("Oude Overnachting week (Bruto)", value=21.0)
-    ovn_weekend = st.number_input("Oude Overnachting weekend (Bruto)", value=28.0)
+    @property
+    def maandsalaris(self) -> float:
+        return self.basis_uurloon * 173.3
 
-# --- REISTIJD FORMULE ---
-def bereken_reistijd_bruto(minuten, is_weekend, salaris):
-    uren = minuten / 60
-    if not is_weekend:
-        deel1 = min(uren, 1.25)
-        deel2 = max(0, uren - 1.25)
-        return (deel1 * (0.00607 * salaris)) + (deel2 * (0.0097 * salaris))
-    else:
-        return uren * (0.0121 * salaris)
+class Calculator:
+    """Verantwoordelijk voor alle gevectoriseerde berekeningen op een uren-DataFrame."""
+    def __init__(self, tarieven: Tarieven):
+        self.t = tarieven
 
-# --- HULPFUNCTIE: VEILIG GETALLEN LEZEN ---
-def safe_float(row, idx):
-    try:
-        if idx != -1 and idx < len(row):
-            val = row.iloc[idx]
-            if pd.notna(val):
-                if isinstance(val, str):
-                    val = val.replace(',', '.')
-                return float(val)
-    except (ValueError, TypeError, IndexError):
-        pass
-    return 0.0
-
-# --- EXCEL PARSER (EXTREME SCAN) ---
-def scan_projecten_extreem(file):
-    df_raw = pd.read_excel(file, header=None)
-    
-    # STAP 1: Zoek de dagen
-    dagen_namen = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
-    rij_dagen = -1
-    dag_starts = {}
-    
-    for idx, row in df_raw.iterrows():
-        # Maak van de hele rij één lange string om te zoeken
-        row_str = " ".join([str(x).lower() for x in row.values])
-        if "maandag" in row_str and "dinsdag" in row_str:
-            rij_dagen = idx
-            for col_idx, val in enumerate(row.values):
-                val_str = str(val).lower().strip()
-                for dag in dagen_namen:
-                    if dag in val_str and dag not in dag_starts:
-                        dag_starts[dag] = col_idx
-            break
+    def bereken_alles(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
             
-    if rij_dagen == -1:
-        return None, None, "Fout 1: Kon de rij met de namen van de dagen ('Maandag', etc.) niet vinden."
+        res = df.copy()
+        
+        # Basis uren
+        uren_totaal = res['N'] + res['O']
+        is_weekend = res['Dag'].isin(['Zaterdag', 'Zondag'])
+        
+        # --- REISTIJD (Gevectoriseerd met Numpy) ---
+        rt_uren = res['R'] / 60.0
+        
+        # Formule doordeweeks: min(uren, 1.25) * 0.607% + max(0, uren - 1.25) * 0.97%
+        rt_doordeweeks = (np.minimum(rt_uren, 1.25) * 0.00607 * self.t.maandsalaris) + \
+                         (np.maximum(0, rt_uren - 1.25) * 0.0097 * self.t.maandsalaris)
+        # Formule weekend: uren * 1.21%
+        rt_weekend = rt_uren * 0.0121 * self.t.maandsalaris
+        
+        rt_bruto = np.where(is_weekend, rt_weekend, rt_doordeweeks)
+        res['Reistijd (Netto)'] = rt_bruto * (1 - self.t.belasting_bijzonder)
+        
+        # --- NIEUWE REGELING ---
+        netto_basis = (uren_totaal * self.t.basis_uurloon) * (1 - self.t.belasting_normaal)
+        res['Nieuw (Netto)'] = netto_basis + self.t.dagtarief_netto + res['Reistijd (Netto)']
+        
+        # --- OUDE REGELING ---
+        # Doordeweeks: (Uren * Loon * 1.30) belast tegen normaal tarief
+        bruto_oud_week = uren_totaal * self.t.basis_uurloon * 1.30
+        netto_oud_week = (bruto_oud_week * (1 - self.t.belasting_normaal)) + \
+                         (self.t.ovn_week * (1 - self.t.belasting_bijzonder)) + \
+                         res['Reistijd (Netto)']
+                         
+        # Weekend: 2.11x bij werk, 75% van 8u bij geen werk, alles tegen bijzonder tarief
+        bruto_oud_weekend = np.where(uren_totaal > 0, 
+                                     uren_totaal * self.t.basis_uurloon * 2.11, 
+                                     self.t.basis_uurloon * 8 * 0.75)
+        netto_oud_weekend = (bruto_oud_weekend + self.t.ovn_weekend) * (1 - self.t.belasting_bijzonder) + \
+                            res['Reistijd (Netto)']
+        
+        res['Oud (Netto)'] = np.where(is_weekend, netto_oud_weekend, netto_oud_week)
+        res['Verschil'] = res['Nieuw (Netto)'] - res['Oud (Netto)']
+        
+        return res
 
-    # STAP 2: Zoek N, O, R
-    mapping = {dag: {"N": -1, "O": -1, "R": -1} for dag in dagen_namen}
-    rij_labels = -1
-    sorted_dagen = sorted(dag_starts.items(), key=lambda x: x[1])
+# ==========================================
+# 2. DATA EXTRACTIE (EXCEL PARSER)
+# ==========================================
+class ExcelParser:
+    """Verantwoordelijk voor het veilig uitlezen en structureren van de Excel export."""
+    DAGEN = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
+    
+    def parse(self, file) -> pd.DataFrame:
+        df_raw = pd.read_excel(file, header=None)
+        
+        rij_dagen, dag_kolommen = self._zoek_header_grenzen(df_raw)
+        rij_labels, mapping = self._map_kolommen(df_raw, rij_dagen, dag_kolommen)
+        
+        return self._extraheer_project_data(df_raw, rij_labels, mapping)
 
-    # Scan maximaal 10 rijen onder de dagen voor de letters
-    for r in range(rij_dagen + 1, min(rij_dagen + 10, len(df_raw))):
-        row_vals = [str(x).upper().strip() for x in df_raw.iloc[r].values]
-        # Zoek naar alles wat op onze kolommen lijkt
-        if any(v.startswith("N") or v.startswith("O") or v.startswith("R") for v in row_vals if len(v) <= 3):
-            rij_labels = r
-            break
-
-    if rij_labels == -1:
-        return None, None, "Fout 2: Kon de letters N, O, R niet vinden in de rijen onder de dagen."
-
-    # Koppel de letters aan de juiste kolommen per dag
-    for i, (dag, start_col) in enumerate(sorted_dagen):
-        end_col = sorted_dagen[i+1][1] if i + 1 < len(sorted_dagen) else len(df_raw.columns)
-        for col_idx in range(start_col, end_col):
-            if col_idx < len(df_raw.columns):
-                val = str(df_raw.iloc[rij_labels, col_idx]).upper().strip()
-                if val == "N" or val.startswith("N"): mapping[dag]["N"] = col_idx
-                elif val == "O" or val.startswith("O"): mapping[dag]["O"] = col_idx
-                elif val == "R" or val.startswith("R"): mapping[dag]["R"] = col_idx
-
-    # STAP 3: Vind projecten onafhankelijk van layout vooraan
-    gevonden_projecten = {}
-    for index, row in df_raw.iterrows():
-        if index <= rij_labels:
-            continue
-            
-        heeft_uren = False
-        uren_som = 0
-        for dag, kolommen in mapping.items():
-            for type_uur, col_idx in kolommen.items():
-                if col_idx != -1:
-                    val = safe_float(row, col_idx)
-                    if val > 0:
-                        heeft_uren = True
-                        uren_som += val
-
-        if heeft_uren:
-            # Verzamel alle tekst in de eerste 8 kolommen om een naam te bouwen
-            tekst_delen = []
-            for c in range(min(8, len(row))):
-                val = str(row.iloc[c]).strip()
-                if val.lower() not in ['nan', 'none', '', 'totaal']:
-                    tekst_delen.append(val)
-                    
-            naam = f"Rij {index+1}: " + " | ".join(tekst_delen)
-            if not tekst_delen:
-                naam = f"Rij {index+1}: Onbekend Project (Totaal: {uren_som}u)"
+    def _zoek_header_grenzen(self, df: pd.DataFrame):
+        """Zoekt met RegEx naar de dagenrij en bepaalt de startkolom per dag/totaal."""
+        for idx, row in df.head(30).iterrows():
+            row_str = " ".join(row.astype(str).str.lower())
+            if re.search(r'\bmaandag\b', row_str) and re.search(r'\bdinsdag\b', row_str):
+                dag_starts = {}
+                for col_idx, val in enumerate(row):
+                    val_str = str(val).lower().strip()
+                    # Zoek naar exacte dagen of de Totaal kolom
+                    for zoekterm in self.DAGEN + ["totaal"]:
+                        if re.search(fr'\b{zoekterm}\b', val_str) and zoekterm not in dag_starts:
+                            dag_starts[zoekterm] = col_idx
+                return idx, dag_starts
                 
-            gevonden_projecten[naam] = row
+        raise ValueError("Fatale Parsing Fout: Kon de dagen-header ('Maandag', etc.) niet vinden.")
+
+    def _map_kolommen(self, df: pd.DataFrame, rij_dagen: int, dag_starts: dict) -> tuple:
+        """Koppelt de N, O, R kolommen aan de specifieke dag binnen zijn grenzen."""
+        mapping = {dag: {"N": -1, "O": -1, "R": -1} for dag in self.DAGEN}
+        
+        # Zoek de sub-header (N, O, R) in de rijen er direct onder
+        rij_labels = -1
+        for r in range(rij_dagen + 1, min(rij_dagen + 5, len(df))):
+            row_vals = df.iloc[r].astype(str).str.upper().str.strip().values
+            if any(re.match(r'^(N|O|R)', v) for v in row_vals):
+                rij_labels = r
+                break
+                
+        if rij_labels == -1:
+             raise ValueError("Fatale Parsing Fout: Kon de 'N', 'O', 'R' labels niet vinden onder de dagen.")
+
+        sorted_starts = sorted(dag_starts.items(), key=lambda x: x[1])
+        
+        for i, (dag, start_col) in enumerate(sorted_starts):
+            if dag == "totaal": continue
             
-    if not gevonden_projecten:
-        return None, None, "Fout 3: Dagen en N/O/R structuur zijn gevonden, maar er staan geen getallen in die kolommen op de regels eronder."
+            end_col = sorted_starts[i+1][1] if i + 1 < len(sorted_starts) else min(start_col + 4, len(df.columns))
+            
+            # Zoek N, O, R binnen het domein van deze specifieke dag
+            for col_idx in range(start_col, end_col):
+                val = str(df.iloc[rij_labels, col_idx]).upper().strip()
+                if re.match(r'^N\b', val): mapping[dag]["N"] = col_idx
+                elif re.match(r'^O\b', val): mapping[dag]["O"] = col_idx
+                elif re.match(r'^R\b|R->', val): mapping[dag]["R"] = col_idx
 
-    return gevonden_projecten, mapping, "Succes"
+            # Fallback mechanisme als headers onvolledig zijn geëxporteerd
+            if mapping[dag]["N"] == -1: mapping[dag]["N"] = start_col
+            if mapping[dag]["O"] == -1 and start_col + 1 < end_col: mapping[dag]["O"] = start_col + 1
+            if mapping[dag]["R"] == -1 and start_col + 2 < end_col: mapping[dag]["R"] = start_col + 2
 
-# --- APP FLOW ---
-uploaded_file = st.file_uploader("Sleep hier je .xlsx urenlijst naar binnen", type="xlsx")
+        return rij_labels, mapping
+
+    def _extraheer_project_data(self, df: pd.DataFrame, start_rij: int, mapping: dict) -> pd.DataFrame:
+        """Bouwt een schone, platte DataFrame op van alle gevonden uren."""
+        extracted_data = []
+        
+        # Snijd het irrelevante bovendeel van het dataframe af voor prestaties
+        df_data = df.iloc[start_rij + 1:]
+        
+        for index, row in df_data.iterrows():
+            col0 = str(row.iloc[0]).strip().lower()
+            if col0 in ['nan', 'none', '', 'project', 'totaal', 'datum']:
+                continue
+                
+            # Controleer of deze rij uren bevat in ANY gemapte kolom
+            relevant_cols = [c for dag in mapping.values() for c in dag.values() if c != -1]
+            uren_in_rij = pd.to_numeric(row.iloc[relevant_cols], errors='coerce').fillna(0)
+            
+            if uren_in_rij.sum() > 0:
+                # Bouw projectnaam uit de eerste paar kolommen
+                tekst_delen = [str(x).strip() for x in row.iloc[:8] if pd.notna(x) and str(x).strip().lower() != 'totaal']
+                project_naam = f"Rij {index+1}: " + " | ".join(tekst_delen)
+                if not tekst_delen:
+                    project_naam = f"Rij {index+1}: Onbekend Project"
+                
+                # Voeg per dag een rij toe aan de platte tabel
+                for dag, kolommen in mapping.items():
+                    extracted_data.append({
+                        "Project": project_naam,
+                        "Dag": dag.capitalize(),
+                        "N": pd.to_numeric(row.iloc[kolommen["N"]], errors='coerce') if kolommen["N"] != -1 else 0.0,
+                        "O": pd.to_numeric(row.iloc[kolommen["O"]], errors='coerce') if kolommen["O"] != -1 else 0.0,
+                        "R": pd.to_numeric(row.iloc[kolommen["R"]], errors='coerce') if kolommen["R"] != -1 else 0.0
+                    })
+                    
+        if not extracted_data:
+            raise ValueError("Fout: Structuur begrepen, maar geen rijen met uren gevonden.")
+            
+        # Zorg dat lege cellen keurig 0.0 zijn
+        df_result = pd.DataFrame(extracted_data).fillna(0.0)
+        return df_result
+
+# ==========================================
+# 3. PRESENTATIE (STREAMLIT UI)
+# ==========================================
+st.set_page_config(page_title="Enterprise Urenvergelijker", layout="wide")
+st.title("📊 Urenvergelijker (Enterprise Edition)")
+
+# -- Configuratie via Sidebar --
+with st.sidebar:
+    st.header("⚙️ Systeem Parameters")
+    tarieven = Tarieven(
+        basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=24.50, step=0.10),
+        belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100,
+        belasting_bijzonder = 0.505,
+        dagtarief_netto = st.number_input("Nieuwe Netto dagvergoeding (€)", value=50.0),
+        ovn_week = st.number_input("Oude Overnachting week (Bruto)", value=21.0),
+        ovn_weekend = st.number_input("Oude Overnachting weekend (Bruto)", value=28.0)
+    )
+    st.info(f"Gehanteerd maandsalaris: € {tarieven.maandsalaris:,.2f}")
+
+# -- Applicatie Logica --
+uploaded_file = st.file_uploader("Upload Excel (.xlsx) export", type="xlsx")
 
 if uploaded_file:
-    projecten_dict, mapping, status_msg = scan_projecten_extreem(uploaded_file)
-    
-    if projecten_dict and mapping:
-        st.success(f"Bestand uitgelezen! Er zijn {len(projecten_dict)} projectregels met uren gevonden.")
+    try:
+        parser = ExcelParser()
+        df_parsed = parser.parse(uploaded_file)
         
-        geselecteerde_projecten = st.multiselect(
-            "Selecteer de te analyseren projecten:",
-            options=list(projecten_dict.keys()),
-            default=list(projecten_dict.keys())
-        )
+        projecten_lijst = df_parsed['Project'].unique().tolist()
+        st.success(f"Parsing succesvol. {len(projecten_lijst)} project(en) gevonden.")
         
-        dagen_display = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-        geaggregeerde_data = []
+        geselecteerd = st.multiselect("Selecteer Projecten:", options=projecten_lijst, default=projecten_lijst)
         
-        for dag in dagen_display:
-            n_tot, o_tot, r_tot = 0.0, 0.0, 0.0
-            dag_lower = dag.lower()
+        if geselecteerd:
+            # Filter op projecten en sommeer direct netjes per dag (Pandas groupby)
+            df_gefilterd = df_parsed[df_parsed['Project'].isin(geselecteerd)]
             
-            if dag_lower in mapping:
-                for p_naam in geselecteerde_projecten:
-                    row = projecten_dict[p_naam]
-                    n_tot += safe_float(row, mapping[dag_lower]["N"])
-                    o_tot += safe_float(row, mapping[dag_lower]["O"])
-                    r_tot += safe_float(row, mapping[dag_lower]["R"])
-                
-            geaggregeerde_data.append({"Dag": dag, "N": n_tot, "O": o_tot, "R": r_tot})
+            # Sorteer de dagen in de juiste week-volgorde
+            dagen_cat = pd.CategoricalDtype(["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"], ordered=True)
+            df_gefilterd['Dag'] = df_gefilterd['Dag'].astype(dagen_cat)
             
-        st.session_state.df_data = pd.DataFrame(geaggregeerde_data)
-        
-    else:
-        st.error("Het bestand kon niet worden verwerkt.")
-        st.warning(f"Systeemmelding: {status_msg}")
+            df_agg = df_gefilterd.groupby('Dag', observed=False)[['N', 'O', 'R']].sum().reset_index()
+            st.session_state.df_master = df_agg
+            
+    except ValueError as e:
+        st.error("Bestand Parsing Mislukt.")
+        st.warning(str(e))
+        st.stop()
 
-# Fallback data
-if 'df_data' not in st.session_state:
-    st.session_state.df_data = pd.DataFrame([
+# -- Fallback en Data Editor --
+if 'df_master' not in st.session_state:
+    st.session_state.df_master = pd.DataFrame([
         {"Dag": d, "N": 0.0, "O": 0.0, "R": 0.0} 
         for d in ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
     ])
 
-# --- TABEL WEERGAVE ---
-st.subheader("1. Urenoverzicht (N, O, R)")
+st.subheader("1. Urendata & Handmatige Correctie")
 edited_df = st.data_editor(
-    st.session_state.df_data,
+    st.session_state.df_master,
     column_config={
         "Dag": st.column_config.TextColumn(disabled=True),
-        "N": st.column_config.NumberColumn("Normaal (N)", format="%.1f"),
+        "N": st.column_config.NumberColumn("Normale Uren (N)", format="%.1f"),
         "O": st.column_config.NumberColumn("Overuren (O)", format="%.1f"),
         "R": st.column_config.NumberColumn("Reisminuten (R)", format="%d")
     },
     use_container_width=True
 )
 
-# --- BEREKENING LOGICA ---
-def calculate_all(row):
-    is_weekend = row['Dag'] in ["Zaterdag", "Zondag"]
-    uren_totaal = row['N'] + row['O']
-    
-    rt_bruto = bereken_reistijd_bruto(row['R'], is_weekend, maandsalaris_calc)
-    rt_netto = rt_bruto * (1 - belasting_bijzonder)
-    
-    # NIEUWE REGELING
-    netto_basis = (uren_totaal * basis_uurloon) * (1 - belasting_normaal)
-    nieuw_totaal = netto_basis + dagtarief_netto + rt_netto
-    
-    # OUDE REGELING
-    if not is_weekend:
-        bruto_oud = (uren_totaal * basis_uurloon * 1.30)
-        netto_oud = (bruto_oud * (1 - belasting_normaal)) + (ovn_week * (1 - belasting_bijzonder)) + rt_netto
-    else:
-        if uren_totaal > 0:
-            bruto_weekend = uren_totaal * (basis_uurloon * 2.11)
-        else:
-            bruto_weekend = (basis_uurloon * 8) * 0.75
-        netto_oud = (bruto_weekend + ovn_weekend) * (1 - belasting_bijzonder) + rt_netto
-            
-    return pd.Series([nieuw_totaal, netto_oud, rt_netto])
+# -- Reken-engine uitvoeren --
+rekenmachine = Calculator(tarieven)
+df_resultaat = rekenmachine.bereken_alles(edited_df)
 
-edited_df[['Nieuw (Netto)', 'Oud (Netto)', 'Reistijd (Netto)']] = edited_df.apply(calculate_all, axis=1)
-edited_df['Verschil'] = edited_df['Nieuw (Netto)'] - edited_df['Oud (Netto)']
-
-# --- DASHBOARD & VISUALISATIE ---
+# -- Resultaten Dashboard --
 st.divider()
-t_nieuw = edited_df['Nieuw (Netto)'].sum()
-t_oud = edited_df['Oud (Netto)'].sum()
+tot_nieuw = df_resultaat['Nieuw (Netto)'].sum()
+tot_oud = df_resultaat['Oud (Netto)'].sum()
+verschil = tot_nieuw - tot_oud
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Totaal Nieuw (Netto)", f"€ {t_nieuw:,.2f}")
-c2.metric("Totaal Oud (Netto)", f"€ {t_oud:,.2f}")
-c3.metric("Netto Verschil", f"€ {t_nieuw - t_oud:,.2f}", delta=f"{t_nieuw - t_oud:,.2f}")
+c1.metric("Netto Opbrengst (Nieuw)", f"€ {tot_nieuw:,.2f}")
+c2.metric("Netto Opbrengst (Oud)", f"€ {tot_oud:,.2f}")
+c3.metric("Definitief Verschil", f"€ {verschil:,.2f}", delta=f"{verschil:,.2f}")
 
-st.subheader("Visuele Vergelijking per Dag")
-fig, ax = plt.subplots(figsize=(10, 4))
-x = np.arange(len(edited_df['Dag']))
-width = 0.35
-ax.bar(x - width/2, edited_df['Oud (Netto)'], width, label='Oude Regeling', color='#FF4B4B')
-ax.bar(x + width/2, edited_df['Nieuw (Netto)'], width, label='Nieuwe Regeling', color='#00CC96')
-ax.set_xticks(x)
-ax.set_xticklabels(edited_df['Dag'])
-ax.legend()
-st.pyplot(fig)
-
-st.subheader("2. Gedetailleerde Analyse")
-st.dataframe(edited_df.style.format({
+st.subheader("Financiële Analyse per Dag")
+st.dataframe(df_resultaat.style.format({
     "Nieuw (Netto)": "€ {:.2f}", 
     "Oud (Netto)": "€ {:.2f}", 
     "Reistijd (Netto)": "€ {:.2f}", 
     "Verschil": "€ {:.2f}"
 }).background_gradient(subset=['Verschil'], cmap='RdYlGn'), use_container_width=True)
+
+# -- Visualisatie --
+fig, ax = plt.subplots(figsize=(10, 3.5))
+x = np.arange(len(df_resultaat['Dag']))
+width = 0.35
+ax.bar(x - width/2, df_resultaat['Oud (Netto)'], width, label='Oud', color='#FF4B4B')
+ax.bar(x + width/2, df_resultaat['Nieuw (Netto)'], width, label='Nieuw', color='#00CC96')
+ax.set_xticks(x)
+ax.set_xticklabels(df_resultaat['Dag'])
+ax.legend()
+st.pyplot(fig)
