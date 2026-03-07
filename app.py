@@ -4,21 +4,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # --- CONFIGURATIE ---
-st.set_page_config(page_title="Urenvergelijker Nieuw vs. Oud", layout="wide")
-st.title("📊 Definitieve Urenvergelijker (Excel Import)")
+st.set_page_config(page_title="Slimme Urenvergelijker", layout="wide")
+st.title("📊 Slimme Urenvergelijker (Project Scan)")
 
 # --- SIDEBAR: INSTELLINGEN ---
 with st.sidebar:
     st.header("⚙️ Salaris & Belasting")
     basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=24.50, step=0.10)
-    
-    # Maandsalaris wordt automatisch berekend voor de reistijd-formule
     maandsalaris_calc = basis_uurloon * 173.3
-    st.info(f"Berekend maandsalaris (173.3u): € {maandsalaris_calc:,.2f}")
+    st.info(f"Berekend maandsalaris: € {maandsalaris_calc:,.2f}")
     
     st.divider()
     belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100
-    belasting_bijzonder = 0.505 # Vast tarief voor overuren/reistijd/weekend
+    belasting_bijzonder = 0.505 
+    
+    st.divider()
+    st.subheader("Excel Scanner")
+    st.write("In welke kolom begint Maandag 'N'?")
+    start_kolom = st.number_input("Kolom-index (A=0, B=1, C=2, D=3, E=4...)", min_value=1, max_value=20, value=4, step=1)
     
     st.divider()
     st.subheader("Vergoedingen")
@@ -36,70 +39,89 @@ def bereken_reistijd_bruto(minuten, is_weekend, salaris):
     else:
         return uren * (0.0121 * salaris)
 
-# --- EXCEL PARSER (Specifiek voor Rij 23) ---
-def parse_excel_uren(file):
+# --- HULPFUNCTIE: VEILIG GETALLEN LEZEN ---
+def safe_float(row, idx):
     try:
-        # header=None voorkomt dat de parser in de war raakt door samengevoegde titels
-        df_raw = pd.read_excel(file, header=None)
-        
-        if len(df_raw) < 23:
-            st.error("Let op: Het Excel-bestand heeft minder dan 23 rijen.")
-            return None
+        if idx < len(row):
+            val = row.iloc[idx]
+            if pd.notna(val):
+                if isinstance(val, str):
+                    val = val.replace(',', '.')
+                return float(val)
+    except (ValueError, TypeError, IndexError):
+        pass
+    return 0.0
 
-        # Rij 23 is index 22 in pandas
-        rij_23 = df_raw.iloc[22]
+# --- EXCEL PARSER (ZOEKT AUTOMATISCH PROJECTEN) ---
+def scan_projecten(file, start_idx):
+    df_raw = pd.read_excel(file, header=None)
+    gevonden_projecten = {}
+    
+    for index, row in df_raw.iterrows():
+        col0 = str(row.iloc[0]).strip()
+        col1 = str(row.iloc[1]).strip() if len(row) > 1 else ""
         
-        dagen_namen = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-        data = []
-        
-        # Aanname: Data begint in kolom C (index 2). 
-        # Maandag = index 2(N), 3(O), 4(R). Dinsdag = index 5(N), 6(O), 7(R) etc.
-        start_kolom = 2 
-        
-        def safe_float(waarde):
-            try:
-                if pd.notna(waarde):
-                    if isinstance(waarde, str):
-                        waarde = waarde.replace(',', '.')
-                    return float(waarde)
-                return 0.0
-            except ValueError:
-                return 0.0
-
-        for i, dag in enumerate(dagen_namen):
-            idx_n = start_kolom + (i * 3)
-            idx_o = start_kolom + (i * 3) + 1
-            idx_r = start_kolom + (i * 3) + 2
+        # Sla lege rijen of duidelijke headers over
+        if col0.lower() in ['nan', 'none', '', 'project', 'totaal', 'datum', 'medewerker']:
+            continue
             
-            try:
-                n_val = safe_float(rij_23[idx_n])
-                o_val = safe_float(rij_23[idx_o])
-                r_val = safe_float(rij_23[idx_r])
-            except IndexError:
-                n_val, o_val, r_val = 0.0, 0.0, 0.0
+        # Controleer of er in de uren-kolommen (Ma t/m Zo) ergens een getal staat groter dan 0
+        heeft_uren = False
+        for col_idx in range(start_idx, min(start_idx + 21, len(row))):
+            if safe_float(row, col_idx) > 0:
+                heeft_uren = True
+                break
                 
-            data.append({
-                "Dag": dag, 
-                "N": n_val, 
-                "O": o_val, 
-                "R": r_val
-            })
-        
-        return pd.DataFrame(data)
-    except Exception as e:
-        st.error(f"Fout bij het uitlezen van Excel: {e}")
-        return None
+        if heeft_uren:
+            # Maak een herkenbare naam voor in het menu
+            naam = f"Rij {index+1}: {col0}"
+            if col1.lower() not in ['nan', 'none', '']:
+                naam += f" - {col1}"
+            gevonden_projecten[naam] = row
+            
+    return gevonden_projecten
 
 # --- APP FLOW & DATA INITIALISATIE ---
 uploaded_file = st.file_uploader("Sleep hier je .xlsx urenlijst naar binnen", type="xlsx")
 
 if uploaded_file:
-    parsed_df = parse_excel_uren(uploaded_file)
-    if parsed_df is not None:
-        st.session_state.df_data = parsed_df
-        st.success("Excel succesvol uitgelezen vanaf rij 23!")
+    projecten_dict = scan_projecten(uploaded_file, int(start_kolom))
+    
+    if projecten_dict:
+        st.success(f"Er zijn {len(projecten_dict)} projecten met uren gevonden in dit bestand!")
+        
+        # Laat de gebruiker de projecten kiezen
+        geselecteerde_projecten = st.multiselect(
+            "Selecteer het project (of meerdere) om te analyseren:",
+            options=list(projecten_dict.keys()),
+            default=list(projecten_dict.keys())[0] # Selecteer standaard de eerste
+        )
+        
+        # Aggregeer de uren van de geselecteerde projecten
+        dagen_namen = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+        geaggregeerde_data = []
+        
+        for i, dag in enumerate(dagen_namen):
+            n_tot, o_tot, r_tot = 0.0, 0.0, 0.0
+            
+            for p_naam in geselecteerde_projecten:
+                row = projecten_dict[p_naam]
+                idx_n = int(start_kolom) + (i * 3)
+                idx_o = int(start_kolom) + (i * 3) + 1
+                idx_r = int(start_kolom) + (i * 3) + 2
+                
+                n_tot += safe_float(row, idx_n)
+                o_tot += safe_float(row, idx_o)
+                r_tot += safe_float(row, idx_r)
+                
+            geaggregeerde_data.append({"Dag": dag, "N": n_tot, "O": o_tot, "R": r_tot})
+            
+        st.session_state.df_data = pd.DataFrame(geaggregeerde_data)
+        
+    else:
+        st.error("Geen rijen gevonden met projectnummers én uren. Check de start-kolom in de zijbalk.")
 
-# Fallback data als er nog geen bestand is geüpload
+# Fallback data als er geen bestand is of bij opstarten
 if 'df_data' not in st.session_state:
     st.session_state.df_data = pd.DataFrame([
         {"Dag": d, "N": 0.0, "O": 0.0, "R": 0.0} 
@@ -108,7 +130,7 @@ if 'df_data' not in st.session_state:
 
 # --- TABEL WEERGAVE ---
 st.subheader("1. Urenoverzicht (N, O, R)")
-st.write("Controleer de uitgelezen data of pas deze handmatig aan.")
+st.write("De uren van de geselecteerde projecten zijn samengevoegd. Je kunt ze hieronder nog handmatig aanpassen.")
 
 edited_df = st.data_editor(
     st.session_state.df_data,
@@ -126,15 +148,14 @@ def calculate_all(row):
     is_weekend = row['Dag'] in ["Zaterdag", "Zondag"]
     uren_totaal = row['N'] + row['O']
     
-    # Reistijd Netto
     rt_bruto = bereken_reistijd_bruto(row['R'], is_weekend, maandsalaris_calc)
     rt_netto = rt_bruto * (1 - belasting_bijzonder)
     
-    # --- NIEUWE REGELING ---
+    # NIEUWE REGELING
     netto_basis = (uren_totaal * basis_uurloon) * (1 - belasting_normaal)
     nieuw_totaal = netto_basis + dagtarief_netto + rt_netto
     
-    # --- OUDE REGELING ---
+    # OUDE REGELING
     if not is_weekend:
         bruto_oud = (uren_totaal * basis_uurloon * 1.30)
         netto_oud = (bruto_oud * (1 - belasting_normaal)) + (ovn_week * (1 - belasting_bijzonder)) + rt_netto
@@ -160,7 +181,6 @@ c1.metric("Totaal Nieuw (Netto)", f"€ {t_nieuw:,.2f}")
 c2.metric("Totaal Oud (Netto)", f"€ {t_oud:,.2f}")
 c3.metric("Netto Verschil", f"€ {t_nieuw - t_oud:,.2f}", delta=f"{t_nieuw - t_oud:,.2f}")
 
-# Grafiek
 st.subheader("Visuele Vergelijking per Dag")
 fig, ax = plt.subplots(figsize=(10, 4))
 x = np.arange(len(edited_df['Dag']))
@@ -172,7 +192,6 @@ ax.set_xticklabels(edited_df['Dag'])
 ax.legend()
 st.pyplot(fig)
 
-# Detail tabel
 st.subheader("2. Gedetailleerde Analyse")
 st.dataframe(edited_df.style.format({
     "Nieuw (Netto)": "€ {:.2f}", 
