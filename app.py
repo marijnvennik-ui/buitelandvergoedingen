@@ -72,13 +72,46 @@ class ExcelParser:
     """Verantwoordelijk voor het veilig uitlezen en structureren van de Excel export."""
     DAGEN = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
     
-    def parse(self, file) -> pd.DataFrame:
+    def parse(self, file) -> tuple:
+        """Retourneert een tuple: (DataFrame met uren, String met label zoals '2026 - Week 2')"""
         df_raw = pd.read_excel(file, header=None)
         
+        # 1. Haal meta-data (Jaar en Week) op
+        label_week = self._zoek_metadata(df_raw, file.name)
+        
+        # 2. Zoek grenzen en uren
         rij_dagen, dag_kolommen = self._zoek_header_grenzen(df_raw)
         rij_labels, mapping = self._map_kolommen(df_raw, rij_dagen, dag_kolommen)
         
-        return self._extraheer_project_data(df_raw, rij_labels, mapping)
+        df_extracted = self._extraheer_project_data(df_raw, rij_labels, mapping)
+        return df_extracted, label_week
+
+    def _zoek_metadata(self, df: pd.DataFrame, fallback_naam: str) -> str:
+        """Scant de eerste 15 rijen voor 'Jaar' en 'Week' en maakt er een strak label van."""
+        jaar, week = None, None
+        
+        for r in range(min(15, len(df))):
+            # Voeg alle cellen in de rij samen tot één string (negeer linebreaks)
+            row_str = " ".join(df.iloc[r].astype(str).str.replace('\n', ' ', regex=False))
+            
+            # Slim zoeken: kijkt door celgrenzen heen (bijv. "Jaar: 2026.0")
+            jaar_match = re.search(r'jaar[:\s]+(\d{4})', row_str, re.IGNORECASE)
+            week_match = re.search(r'week[:\s]+(\d{1,2})', row_str, re.IGNORECASE)
+            
+            if jaar_match and not jaar:
+                jaar = jaar_match.group(1)
+            if week_match and not week:
+                week = week_match.group(1)
+                
+            if jaar and week:
+                break
+                
+        if jaar and week:
+            return f"{jaar} - Week {week}"
+        elif week:
+            return f"Week {week}"
+        else:
+            return fallback_naam # Val terug op bestandsnaam als het mislukt
 
     def _zoek_header_grenzen(self, df: pd.DataFrame):
         for idx, row in df.head(30).iterrows():
@@ -99,7 +132,6 @@ class ExcelParser:
         rij_labels = -1
         for r in range(rij_dagen + 1, min(rij_dagen + 5, len(df))):
             row_vals = df.iloc[r].astype(str).str.upper().str.strip().values
-            # Check of er tenminste ergens een N, O, R of S staat in deze rij
             if any(re.match(r'^(N|O|R|S)', v) for v in row_vals):
                 rij_labels = r
                 break
@@ -116,17 +148,12 @@ class ExcelParser:
             
             for col_idx in range(start_col, end_col):
                 val = str(df.iloc[rij_labels, col_idx]).upper().strip()
-                
-                # Exclusief en alleen mappen als de letter er écht staat!
                 if val == 'N' or val.startswith('N ') or val.startswith('N-'): 
                     mapping[dag]["N"] = col_idx
                 elif val == 'O' or val.startswith('O ') or val.startswith('O-'): 
                     mapping[dag]["O"] = col_idx
                 elif val == 'R' or val.startswith('R ') or val.startswith('R-'): 
                     mapping[dag]["R"] = col_idx
-
-            # GEEN VANGNET MEER! Als een kolom er niet is (bijv. geen R), blijft de index -1.
-            # De extraheer-functie weet dan dat het 0 uren zijn.
 
         return rij_labels, mapping
 
@@ -170,7 +197,7 @@ class ExcelParser:
                     })
                     
         if not extracted_data:
-            raise ValueError("Fout: Structuur begrepen, maar geen rijen met uren gevonden. Check of de cellen niet leeg zijn.")
+            raise ValueError("Fout: Structuur begrepen, maar geen rijen met uren gevonden.")
             
         return pd.DataFrame(extracted_data).fillna(0.0)
 
@@ -178,7 +205,7 @@ class ExcelParser:
 # 3. PRESENTATIE (STREAMLIT UI)
 # ==========================================
 st.set_page_config(page_title="Enterprise Urenvergelijker", layout="wide")
-st.title("📊 Urenvergelijker (Enterprise Edition)")
+st.title("📊 Multi-Week Urenvergelijker")
 
 with st.sidebar:
     st.header("⚙️ Systeem Parameters")
@@ -192,24 +219,35 @@ with st.sidebar:
     )
     st.info(f"Gehanteerd maandsalaris: € {tarieven.maandsalaris:,.2f}")
 
-uploaded_file = st.file_uploader("Upload Excel (.xlsx) export", type="xlsx")
+uploaded_files = st.file_uploader("Upload Excel (.xlsx) exports", type="xlsx", accept_multiple_files=True)
 
-if uploaded_file:
+if uploaded_files:
     try:
         parser = ExcelParser()
-        df_parsed = parser.parse(uploaded_file)
+        alle_bestanden_data = []
+        labels_gevonden = []
         
-        projecten_lijst = df_parsed['Project'].unique().tolist()
-        st.success(f"Parsing succesvol. {len(projecten_lijst)} project(en) gevonden.")
+        for file in uploaded_files:
+            # We ontvangen nu ook het label vanuit de parser
+            df_parsed, label = parser.parse(file)
+            
+            df_parsed.insert(0, 'Week', label)
+            alle_bestanden_data.append(df_parsed)
+            labels_gevonden.append(label)
+            
+        df_gecombineerd = pd.concat(alle_bestanden_data, ignore_index=True)
         
-        geselecteerd = st.multiselect("Selecteer Projecten:", options=projecten_lijst, default=projecten_lijst)
+        projecten_lijst = df_gecombineerd['Project'].unique().tolist()
+        st.success(f"Geüpload: {', '.join(labels_gevonden)}. ({len(projecten_lijst)} projecten verwerkt).")
+        
+        geselecteerd = st.multiselect("Selecteer Projecten om te filteren:", options=projecten_lijst, default=projecten_lijst)
         
         if geselecteerd:
-            df_gefilterd = df_parsed[df_parsed['Project'].isin(geselecteerd)]
+            df_gefilterd = df_gecombineerd[df_gecombineerd['Project'].isin(geselecteerd)]
             dagen_cat = pd.CategoricalDtype(["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"], ordered=True)
             df_gefilterd['Dag'] = df_gefilterd['Dag'].astype(dagen_cat)
             
-            df_agg = df_gefilterd.groupby('Dag', observed=False)[['N', 'O', 'R']].sum().reset_index()
+            df_agg = df_gefilterd.groupby(['Week', 'Dag'], observed=False)[['N', 'O', 'R']].sum().reset_index()
             st.session_state.df_master = df_agg
             
     except ValueError as e:
@@ -219,7 +257,7 @@ if uploaded_file:
 
 if 'df_master' not in st.session_state:
     st.session_state.df_master = pd.DataFrame([
-        {"Dag": d, "N": 0.0, "O": 0.0, "R": 0.0} 
+        {"Week": "Upload Data", "Dag": d, "N": 0.0, "O": 0.0, "R": 0.0} 
         for d in ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
     ])
 
@@ -227,6 +265,7 @@ st.subheader("1. Urendata & Handmatige Correctie")
 edited_df = st.data_editor(
     st.session_state.df_master,
     column_config={
+        "Week": st.column_config.TextColumn("Week / Periode", disabled=True),
         "Dag": st.column_config.TextColumn(disabled=True),
         "N": st.column_config.NumberColumn("Normale Uren (N)", format="%.1f"),
         "O": st.column_config.NumberColumn("Overuren (O)", format="%.1f"),
@@ -254,14 +293,18 @@ st.dataframe(df_resultaat.style.format({
     "Oud (Netto)": "€ {:.2f}", 
     "Reistijd (Netto)": "€ {:.2f}", 
     "Verschil": "€ {:.2f}"
-}).background_gradient(subset=['Verschil'], cmap='RdYlGn'), use_container_width=True)
+}).background_gradient(subset=['Verschil'], cmap='RdYlGn').hide(axis="index"), use_container_width=True)
 
-fig, ax = plt.subplots(figsize=(10, 3.5))
-x = np.arange(len(df_resultaat['Dag']))
+# Bouw de grafiek as met de daadwerkelijke data uit de Excelsheet
+df_resultaat['Grafiek_Label'] = df_resultaat['Week'].astype(str) + "\n" + df_resultaat['Dag'].astype(str)
+
+fig, ax = plt.subplots(figsize=(max(10, len(df_resultaat) * 0.5), 4))
+x = np.arange(len(df_resultaat['Grafiek_Label']))
 width = 0.35
 ax.bar(x - width/2, df_resultaat['Oud (Netto)'], width, label='Oud', color='#FF4B4B')
 ax.bar(x + width/2, df_resultaat['Nieuw (Netto)'], width, label='Nieuw', color='#00CC96')
 ax.set_xticks(x)
-ax.set_xticklabels(df_resultaat['Dag'])
+ax.set_xticklabels(df_resultaat['Grafiek_Label'], rotation=45, ha='right', fontsize=9)
 ax.legend()
+plt.tight_layout()
 st.pyplot(fig)
