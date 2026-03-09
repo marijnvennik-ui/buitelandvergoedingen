@@ -43,25 +43,40 @@ class Calculator:
         rt_weekend = rt_uren * 0.0121 * self.t.maandsalaris
         
         rt_bruto = np.where(is_weekend, rt_weekend, rt_doordeweeks)
-        res['Reistijd (Netto)'] = rt_bruto * (1 - self.t.belasting_bijzonder)
+        rt_netto = rt_bruto * (1 - self.t.belasting_bijzonder)
+        res['Reistijd (Netto)'] = rt_netto
         
-        # --- NIEUWE REGELING ---
-        netto_basis = (uren_totaal * self.t.basis_uurloon) * (1 - self.t.belasting_normaal)
-        res['Nieuw (Netto)'] = netto_basis + self.t.dagtarief_netto + res['Reistijd (Netto)']
-        
-        # --- OUDE REGELING ---
-        bruto_oud_week = uren_totaal * self.t.basis_uurloon * 1.30
-        netto_oud_week = (bruto_oud_week * (1 - self.t.belasting_normaal)) + \
-                         (self.t.ovn_week * (1 - self.t.belasting_bijzonder)) + \
-                         res['Reistijd (Netto)']
+        # ==========================================
+        # OUDE REGELING BEREKENING
+        # ==========================================
+        # Doordeweeks: N = 100% (Normaal belast), O = 167% (Bijzonder belast)
+        oud_n_netto = res['N'] * self.t.basis_uurloon * (1 - self.t.belasting_normaal)
+        oud_o_netto = res['O'] * self.t.basis_uurloon * 1.67 * (1 - self.t.belasting_bijzonder)
+        oud_ovn_netto = self.t.ovn_week * (1 - self.t.belasting_bijzonder)
+        netto_oud_week = oud_n_netto + oud_o_netto + oud_ovn_netto + rt_netto
                          
+        # Weekend: Alles 211% (Bijzonder belast). Bij 0 uren vangnet van 75% over 8 uur.
         bruto_oud_weekend = np.where(uren_totaal > 0, 
                                      uren_totaal * self.t.basis_uurloon * 2.11, 
                                      self.t.basis_uurloon * 8 * 0.75)
-        netto_oud_weekend = (bruto_oud_weekend + self.t.ovn_weekend) * (1 - self.t.belasting_bijzonder) + \
-                            res['Reistijd (Netto)']
+        netto_oud_weekend = (bruto_oud_weekend + self.t.ovn_weekend) * (1 - self.t.belasting_bijzonder) + rt_netto
         
         res['Oud (Netto)'] = np.where(is_weekend, netto_oud_weekend, netto_oud_week)
+
+        # ==========================================
+        # NIEUWE REGELING BEREKENING
+        # ==========================================
+        # Doordeweeks: Alle uren (N+O) tegen 100% (Normaal belast) + Netto Dagvergoeding
+        netto_nieuw_week = (uren_totaal * self.t.basis_uurloon) * (1 - self.t.belasting_normaal) + self.t.dagtarief_netto + rt_netto
+        
+        # Weekend: Alle uren (N+O) tegen 211% (Bijzonder belast) + Netto Dagvergoeding
+        nieuw_basis_weekend_netto = (uren_totaal * self.t.basis_uurloon * 2.11) * (1 - self.t.belasting_bijzonder)
+        # We kennen de dagvergoeding toe op weekenddagen
+        netto_nieuw_weekend = nieuw_basis_weekend_netto + self.t.dagtarief_netto + rt_netto
+
+        res['Nieuw (Netto)'] = np.where(is_weekend, netto_nieuw_weekend, netto_nieuw_week)
+        
+        # --- VERSCHIL ---
         res['Verschil'] = res['Nieuw (Netto)'] - res['Oud (Netto)']
         
         return res
@@ -216,23 +231,25 @@ st.title("📊 Multi-Week Urenvergelijker")
 with st.expander("ℹ️ Hoe worden deze bedragen exact berekend? (Klik om uit te klappen)"):
     st.markdown("""
     ### 🆕 Nieuwe Regeling
-    * **Basis & Overwerk (N + O):** Alle uren worden simpelweg vermenigvuldigd met je Basis Uurloon. Er is geen extra percentage (toeslag) meer voor overwerk of weekenden. Dit valt in schijf 1 (Normale Belasting).
-    * **Dagvergoeding:** Je ontvangt een vaste, **Netto** vergoeding per gewerkte dag.
+    * **Doordeweeks:** Alle gewerkte uren (N+O) worden tegen **100%** van je Basis Uurloon berekend (Normaal tarief).
+    * **Weekend:** Alle uren in het weekend tellen voor **211%** (Bijzonder tarief).
+    * **Dagvergoeding:** Je ontvangt standaard een vaste, **Netto** vergoeding bovenop elke gewerkte dag.
     * **Reistijd (R):** Wordt exact zo berekend als in de oude regeling en netto opgeteld.
 
     ---
     
     ### 🏛️ Oude Regeling
-    * **Doordeweeks:** Gewerkte uren worden uitbetaald tegen **130%** van je Basis Uurloon (belast tegen Normaal tarief). Je krijgt daarbij een bruto overnachtingsvergoeding (belast tegen Bijzonder tarief).
-    * **Weekend (Gewerkt):** Elk uur dat je werkt levert **211%** van je Basis Uurloon op.
-    * **Weekend (Niet gewerkt):** Geen uren gemaakt, maar wel weg? Dan krijg je een vangnet van **75% van 8 uur**. 
-    * *Let op:* Zowel de weekenduren als de weekend-overnachting worden zwaar belast (Bijzonder Tarief).
+    * **Doordeweeks (Normaal):** Reguliere uren (N) gaan tegen **100%** (Normaal tarief).
+    * **Doordeweeks (Overwerk):** Overuren (O) tikten vroeger extra hard aan met een vermenigvuldiger van **167%** (Bijzonder tarief).
+    * **Weekend (Gewerkt):** Net als in de nieuwe regeling levert een weekenduur **211%** op.
+    * **Vangnet Weekend:** Geen uren gemaakt, maar wel van huis? Dan krijg je een vangnet van **75% van 8 uur**. 
+    * **Overnachting:** Bovenop doordeweekse/weekend dagen ontving je een bruto overnachtingsvergoeding (Bijzonder tarief).
 
     ---
 
     ### 🚗 Reistijd Formule (Identiek voor beide regelingen)
     Reistijd is gekoppeld aan je *Berekende Maandsalaris* (Uurloon × 173.3 uur) en valt standaard onder het Bijzonder Belastingtarief.
-    * **Doordeweeks:** De eerste 1.25 uur (75 min) leveren **0.607%** van je maandsalaris per uur op. Alles daarboven tikt harder aan met **0.97%** per uur.
+    * **Doordeweeks:** De eerste 1.25 uur (75 min) leveren **0.607%** van je maandsalaris per uur op. Alles daarboven tikt aan met **0.97%** per uur.
     * **Weekend:** Reistijd in het weekend levert lineair **1.21%** van je maandsalaris per uur op.
     """)
 
