@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import re
+import datetime
 from dataclasses import dataclass
 
 # ==========================================
@@ -33,7 +34,8 @@ class Calculator:
         res = df.copy()
         
         uren_totaal = res['N'] + res['O']
-        is_weekend = res['Dag'].isin(['Zaterdag', 'Zondag'])
+        # Controleer op weekend via tekst-herkenning (omdat de datum er nu bij staat)
+        is_weekend = res['Dag'].str.contains('Zaterdag|Zondag', case=False, na=False)
         
         # --- REISTIJD (Gevectoriseerd met Numpy) ---
         rt_uren = res['R'] / 60.0
@@ -69,49 +71,44 @@ class Calculator:
 # 2. DATA EXTRACTIE (EXCEL PARSER)
 # ==========================================
 class ExcelParser:
-    """Verantwoordelijk voor het veilig uitlezen en structureren van de Excel export."""
+    """Verantwoordelijk voor het uitlezen van Excel, inclusief slimme datum-generatie."""
     DAGEN = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
     
-    def parse(self, file) -> tuple:
-        """Retourneert een tuple: (DataFrame met uren, String met label zoals '2026 - Week 2')"""
+    def parse(self, file) -> pd.DataFrame:
         df_raw = pd.read_excel(file, header=None)
         
-        # 1. Haal meta-data (Jaar en Week) op
-        label_week = self._zoek_metadata(df_raw, file.name)
-        
-        # 2. Zoek grenzen en uren
+        jaar, week = self._zoek_metadata(df_raw, file.name)
         rij_dagen, dag_kolommen = self._zoek_header_grenzen(df_raw)
         rij_labels, mapping = self._map_kolommen(df_raw, rij_dagen, dag_kolommen)
         
-        df_extracted = self._extraheer_project_data(df_raw, rij_labels, mapping)
-        return df_extracted, label_week
+        return self._extraheer_project_data(df_raw, rij_labels, mapping, jaar, week)
 
-    def _zoek_metadata(self, df: pd.DataFrame, fallback_naam: str) -> str:
-        """Scant de eerste 15 rijen voor 'Jaar' en 'Week' en maakt er een strak label van."""
+    def _zoek_metadata(self, df: pd.DataFrame, fallback_naam: str):
         jaar, week = None, None
         
-        for r in range(min(15, len(df))):
-            # Voeg alle cellen in de rij samen tot één string (negeer linebreaks)
-            row_str = " ".join(df.iloc[r].astype(str).str.replace('\n', ' ', regex=False))
+        # Scant de eerste 20 rijen dwars door alle kolommen heen
+        for r in range(min(20, len(df))):
+            row_str = " ".join(df.iloc[r].astype(str).str.lower().replace('\n', ' '))
             
-            # Slim zoeken: kijkt door celgrenzen heen (bijv. "Jaar: 2026.0")
-            jaar_match = re.search(r'jaar[:\s]+(\d{4})', row_str, re.IGNORECASE)
-            week_match = re.search(r'week[:\s]+(\d{1,2})', row_str, re.IGNORECASE)
+            if 'jaar' in row_str and not jaar:
+                m = re.search(r'(20[2-9]\d)', row_str)
+                if m: jaar = int(m.group(1))
+                
+            if 'week' in row_str and not week:
+                m = re.search(r'week.*?(\d{1,2})\b', row_str)
+                if m: week = int(m.group(1))
+                
+            if jaar and week: break
+                
+        # Vangnet: als het écht niet in het bestand staat, probeer de bestandsnaam
+        if not jaar:
+            m = re.search(r'(20[2-9]\d)', fallback_naam)
+            if m: jaar = int(m.group(1))
+        if not week:
+            m = re.search(r'week.*?(\d{1,2})\b', fallback_naam.lower())
+            if m: week = int(m.group(1))
             
-            if jaar_match and not jaar:
-                jaar = jaar_match.group(1)
-            if week_match and not week:
-                week = week_match.group(1)
-                
-            if jaar and week:
-                break
-                
-        if jaar and week:
-            return f"{jaar} - Week {week}"
-        elif week:
-            return f"Week {week}"
-        else:
-            return fallback_naam # Val terug op bestandsnaam als het mislukt
+        return jaar, week
 
     def _zoek_header_grenzen(self, df: pd.DataFrame):
         for idx, row in df.head(30).iterrows():
@@ -128,8 +125,8 @@ class ExcelParser:
 
     def _map_kolommen(self, df: pd.DataFrame, rij_dagen: int, dag_starts: dict) -> tuple:
         mapping = {dag: {"N": -1, "O": -1, "R": -1} for dag in self.DAGEN}
-        
         rij_labels = -1
+        
         for r in range(rij_dagen + 1, min(rij_dagen + 5, len(df))):
             row_vals = df.iloc[r].astype(str).str.upper().str.strip().values
             if any(re.match(r'^(N|O|R|S)', v) for v in row_vals):
@@ -137,7 +134,7 @@ class ExcelParser:
                 break
                 
         if rij_labels == -1:
-             raise ValueError("Fatale Parsing Fout: Kon de 'N', 'O', 'R' labels niet vinden onder de dagen.")
+             raise ValueError("Fatale Parsing Fout: Kon de 'N', 'O', 'R' labels niet vinden.")
 
         sorted_starts = sorted(dag_starts.items(), key=lambda x: x[1])
         
@@ -148,18 +145,17 @@ class ExcelParser:
             
             for col_idx in range(start_col, end_col):
                 val = str(df.iloc[rij_labels, col_idx]).upper().strip()
-                if val == 'N' or val.startswith('N ') or val.startswith('N-'): 
-                    mapping[dag]["N"] = col_idx
-                elif val == 'O' or val.startswith('O ') or val.startswith('O-'): 
-                    mapping[dag]["O"] = col_idx
-                elif val == 'R' or val.startswith('R ') or val.startswith('R-'): 
-                    mapping[dag]["R"] = col_idx
+                if val == 'N' or val.startswith('N ') or val.startswith('N-'): mapping[dag]["N"] = col_idx
+                elif val == 'O' or val.startswith('O ') or val.startswith('O-'): mapping[dag]["O"] = col_idx
+                elif val == 'R' or val.startswith('R ') or val.startswith('R-'): mapping[dag]["R"] = col_idx
 
         return rij_labels, mapping
 
-    def _extraheer_project_data(self, df: pd.DataFrame, start_rij: int, mapping: dict) -> pd.DataFrame:
+    def _extraheer_project_data(self, df: pd.DataFrame, start_rij: int, mapping: dict, jaar: int, week: int) -> pd.DataFrame:
         extracted_data = []
         df_data = df.iloc[start_rij + 1:]
+        
+        iso_map = {"maandag": 1, "dinsdag": 2, "woensdag": 3, "donderdag": 4, "vrijdag": 5, "zaterdag": 6, "zondag": 7}
         
         for index, row in df_data.iterrows():
             row_start = " ".join([str(x).lower() for x in row.iloc[:3] if pd.notna(x)])
@@ -175,9 +171,7 @@ class ExcelParser:
             
             if uren_in_rij.sum() > 0:
                 tekst_delen = [str(x).strip() for x in row.iloc[:8] if pd.notna(x) and str(x).strip().lower() not in ['nan', 'none', '']]
-                project_naam = f"Rij {index+1}: " + " | ".join(tekst_delen)
-                if not tekst_delen:
-                    project_naam = f"Rij {index+1}: Onbekend Project"
+                project_naam = f"Rij {index+1}: " + " | ".join(tekst_delen) if tekst_delen else f"Rij {index+1}: Onbekend Project"
                 
                 for dag, kolommen in mapping.items():
                     n_str = str(row.iloc[kolommen["N"]]).replace(',', '.') if kolommen["N"] != -1 else '0'
@@ -188,9 +182,26 @@ class ExcelParser:
                     o_val = pd.to_numeric(o_str, errors='coerce')
                     r_val = pd.to_numeric(r_str, errors='coerce')
                     
+                    # ISO Datum berekening!
+                    datum_str = dag.capitalize()
+                    sort_date = None
+                    
+                    if jaar and week:
+                        try:
+                            # Converteert Jaar + Week + Dag naar een harde kalenderdatum
+                            calc_date = datetime.datetime.strptime(f'{jaar}-W{week:02d}-{iso_map[dag]}', "%G-W%V-%u").date()
+                            datum_str = f"{dag.capitalize()} {calc_date.strftime('%d-%m-%Y')}"
+                            sort_date = pd.to_datetime(calc_date)
+                        except ValueError:
+                            pass # Als de berekening onmogelijk is (bijv week 54)
+                    
+                    periode_label = f"{jaar} - Week {week}" if jaar and week else "Onbekende Periode"
+                    
                     extracted_data.append({
                         "Project": project_naam,
-                        "Dag": dag.capitalize(),
+                        "Periode": periode_label,
+                        "Dag": datum_str,
+                        "Datum_Sorteer": sort_date, # Verborgen kolom voor wiskundige sortering
                         "N": n_val if pd.notna(n_val) else 0.0,
                         "O": o_val if pd.notna(o_val) else 0.0,
                         "R": r_val if pd.notna(r_val) else 0.0
@@ -225,29 +236,27 @@ if uploaded_files:
     try:
         parser = ExcelParser()
         alle_bestanden_data = []
-        labels_gevonden = []
         
         for file in uploaded_files:
-            # We ontvangen nu ook het label vanuit de parser
-            df_parsed, label = parser.parse(file)
-            
-            df_parsed.insert(0, 'Week', label)
+            df_parsed = parser.parse(file)
             alle_bestanden_data.append(df_parsed)
-            labels_gevonden.append(label)
             
         df_gecombineerd = pd.concat(alle_bestanden_data, ignore_index=True)
         
         projecten_lijst = df_gecombineerd['Project'].unique().tolist()
-        st.success(f"Geüpload: {', '.join(labels_gevonden)}. ({len(projecten_lijst)} projecten verwerkt).")
+        st.success(f"{len(uploaded_files)} bestand(en) uitgelezen. {len(projecten_lijst)} projecten gevonden.")
         
         geselecteerd = st.multiselect("Selecteer Projecten om te filteren:", options=projecten_lijst, default=projecten_lijst)
         
         if geselecteerd:
             df_gefilterd = df_gecombineerd[df_gecombineerd['Project'].isin(geselecteerd)]
-            dagen_cat = pd.CategoricalDtype(["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"], ordered=True)
-            df_gefilterd['Dag'] = df_gefilterd['Dag'].astype(dagen_cat)
             
-            df_agg = df_gefilterd.groupby(['Week', 'Dag'], observed=False)[['N', 'O', 'R']].sum().reset_index()
+            # Groepeer de data en bewaar de verborgen sorteerdatum
+            df_agg = df_gefilterd.groupby(['Periode', 'Dag', 'Datum_Sorteer'], dropna=False)[['N', 'O', 'R']].sum().reset_index()
+            
+            # Garandeer dat week 1 altijd voor week 2 komt, en maandag voor dinsdag
+            df_agg = df_agg.sort_values(by=['Datum_Sorteer'])
+            
             st.session_state.df_master = df_agg
             
     except ValueError as e:
@@ -257,16 +266,19 @@ if uploaded_files:
 
 if 'df_master' not in st.session_state:
     st.session_state.df_master = pd.DataFrame([
-        {"Week": "Upload Data", "Dag": d, "N": 0.0, "O": 0.0, "R": 0.0} 
+        {"Periode": "-", "Dag": d, "Datum_Sorteer": None, "N": 0.0, "O": 0.0, "R": 0.0} 
         for d in ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
     ])
 
 st.subheader("1. Urendata & Handmatige Correctie")
+# We tonen de Datum_Sorteer niet aan de gebruiker, die wordt puur gebruikt voor wiskundige chronologie
+weergave_df = st.session_state.df_master.drop(columns=['Datum_Sorteer']) if 'Datum_Sorteer' in st.session_state.df_master else st.session_state.df_master
+
 edited_df = st.data_editor(
-    st.session_state.df_master,
+    weergave_df,
     column_config={
-        "Week": st.column_config.TextColumn("Week / Periode", disabled=True),
-        "Dag": st.column_config.TextColumn(disabled=True),
+        "Periode": st.column_config.TextColumn("Periode", disabled=True),
+        "Dag": st.column_config.TextColumn("Datum", disabled=True),
         "N": st.column_config.NumberColumn("Normale Uren (N)", format="%.1f"),
         "O": st.column_config.NumberColumn("Overuren (O)", format="%.1f"),
         "R": st.column_config.NumberColumn("Reisminuten (R)", format="%d")
@@ -295,16 +307,6 @@ st.dataframe(df_resultaat.style.format({
     "Verschil": "€ {:.2f}"
 }).background_gradient(subset=['Verschil'], cmap='RdYlGn').hide(axis="index"), use_container_width=True)
 
-# Bouw de grafiek as met de daadwerkelijke data uit de Excelsheet
-df_resultaat['Grafiek_Label'] = df_resultaat['Week'].astype(str) + "\n" + df_resultaat['Dag'].astype(str)
+df_resultaat['Grafiek_Label'] = df_resultaat['Dag']
 
-fig, ax = plt.subplots(figsize=(max(10, len(df_resultaat) * 0.5), 4))
-x = np.arange(len(df_resultaat['Grafiek_Label']))
-width = 0.35
-ax.bar(x - width/2, df_resultaat['Oud (Netto)'], width, label='Oud', color='#FF4B4B')
-ax.bar(x + width/2, df_resultaat['Nieuw (Netto)'], width, label='Nieuw', color='#00CC96')
-ax.set_xticks(x)
-ax.set_xticklabels(df_resultaat['Grafiek_Label'], rotation=45, ha='right', fontsize=9)
-ax.legend()
-plt.tight_layout()
-st.pyplot(fig)
+fig, ax = plt.subplots(figsize=(max(10
