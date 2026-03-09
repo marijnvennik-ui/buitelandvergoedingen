@@ -34,7 +34,6 @@ class Calculator:
         res = df.copy()
         
         uren_totaal = res['N'] + res['O']
-        # Controleer op weekend via tekst-herkenning (omdat de datum er nu bij staat)
         is_weekend = res['Dag'].str.contains('Zaterdag|Zondag', case=False, na=False)
         
         # --- REISTIJD (Gevectoriseerd met Numpy) ---
@@ -71,7 +70,6 @@ class Calculator:
 # 2. DATA EXTRACTIE (EXCEL PARSER)
 # ==========================================
 class ExcelParser:
-    """Verantwoordelijk voor het uitlezen van Excel, inclusief slimme datum-generatie."""
     DAGEN = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
     
     def parse(self, file) -> pd.DataFrame:
@@ -86,7 +84,6 @@ class ExcelParser:
     def _zoek_metadata(self, df: pd.DataFrame, fallback_naam: str):
         jaar, week = None, None
         
-        # Scant de eerste 20 rijen dwars door alle kolommen heen
         for r in range(min(20, len(df))):
             row_str = " ".join(df.iloc[r].astype(str).str.lower().replace('\n', ' '))
             
@@ -100,7 +97,6 @@ class ExcelParser:
                 
             if jaar and week: break
                 
-        # Vangnet: als het écht niet in het bestand staat, probeer de bestandsnaam
         if not jaar:
             m = re.search(r'(20[2-9]\d)', fallback_naam)
             if m: jaar = int(m.group(1))
@@ -182,18 +178,16 @@ class ExcelParser:
                     o_val = pd.to_numeric(o_str, errors='coerce')
                     r_val = pd.to_numeric(r_str, errors='coerce')
                     
-                    # ISO Datum berekening!
                     datum_str = dag.capitalize()
                     sort_date = None
                     
                     if jaar and week:
                         try:
-                            # Converteert Jaar + Week + Dag naar een harde kalenderdatum
                             calc_date = datetime.datetime.strptime(f'{jaar}-W{week:02d}-{iso_map[dag]}', "%G-W%V-%u").date()
                             datum_str = f"{dag.capitalize()} {calc_date.strftime('%d-%m-%Y')}"
                             sort_date = pd.to_datetime(calc_date)
                         except ValueError:
-                            pass # Als de berekening onmogelijk is (bijv week 54)
+                            pass
                     
                     periode_label = f"{jaar} - Week {week}" if jaar and week else "Onbekende Periode"
                     
@@ -201,7 +195,7 @@ class ExcelParser:
                         "Project": project_naam,
                         "Periode": periode_label,
                         "Dag": datum_str,
-                        "Datum_Sorteer": sort_date, # Verborgen kolom voor wiskundige sortering
+                        "Datum_Sorteer": sort_date,
                         "N": n_val if pd.notna(n_val) else 0.0,
                         "O": o_val if pd.notna(o_val) else 0.0,
                         "R": r_val if pd.notna(r_val) else 0.0
@@ -217,6 +211,30 @@ class ExcelParser:
 # ==========================================
 st.set_page_config(page_title="Enterprise Urenvergelijker", layout="wide")
 st.title("📊 Multi-Week Urenvergelijker")
+
+# --- INFORMATIE BLOK ---
+with st.expander("ℹ️ Hoe worden deze bedragen exact berekend? (Klik om uit te klappen)"):
+    st.markdown("""
+    ### 🆕 Nieuwe Regeling
+    * **Basis & Overwerk (N + O):** Alle uren worden simpelweg vermenigvuldigd met je Basis Uurloon. Er is geen extra percentage (toeslag) meer voor overwerk of weekenden. Dit valt in schijf 1 (Normale Belasting).
+    * **Dagvergoeding:** Je ontvangt een vaste, **Netto** vergoeding per gewerkte dag.
+    * **Reistijd (R):** Wordt exact zo berekend als in de oude regeling en netto opgeteld.
+
+    ---
+    
+    ### 🏛️ Oude Regeling
+    * **Doordeweeks:** Gewerkte uren worden uitbetaald tegen **130%** van je Basis Uurloon (belast tegen Normaal tarief). Je krijgt daarbij een bruto overnachtingsvergoeding (belast tegen Bijzonder tarief).
+    * **Weekend (Gewerkt):** Elk uur dat je werkt levert **211%** van je Basis Uurloon op.
+    * **Weekend (Niet gewerkt):** Geen uren gemaakt, maar wel weg? Dan krijg je een vangnet van **75% van 8 uur**. 
+    * *Let op:* Zowel de weekenduren als de weekend-overnachting worden zwaar belast (Bijzonder Tarief).
+
+    ---
+
+    ### 🚗 Reistijd Formule (Identiek voor beide regelingen)
+    Reistijd is gekoppeld aan je *Berekende Maandsalaris* (Uurloon × 173.3 uur) en valt standaard onder het Bijzonder Belastingtarief.
+    * **Doordeweeks:** De eerste 1.25 uur (75 min) leveren **0.607%** van je maandsalaris per uur op. Alles daarboven tikt harder aan met **0.97%** per uur.
+    * **Weekend:** Reistijd in het weekend levert lineair **1.21%** van je maandsalaris per uur op.
+    """)
 
 with st.sidebar:
     st.header("⚙️ Systeem Parameters")
@@ -251,10 +269,7 @@ if uploaded_files:
         if geselecteerd:
             df_gefilterd = df_gecombineerd[df_gecombineerd['Project'].isin(geselecteerd)]
             
-            # Groepeer de data en bewaar de verborgen sorteerdatum
             df_agg = df_gefilterd.groupby(['Periode', 'Dag', 'Datum_Sorteer'], dropna=False)[['N', 'O', 'R']].sum().reset_index()
-            
-            # Garandeer dat week 1 altijd voor week 2 komt, en maandag voor dinsdag
             df_agg = df_agg.sort_values(by=['Datum_Sorteer'])
             
             st.session_state.df_master = df_agg
@@ -271,7 +286,6 @@ if 'df_master' not in st.session_state:
     ])
 
 st.subheader("1. Urendata & Handmatige Correctie")
-# We tonen de Datum_Sorteer niet aan de gebruiker, die wordt puur gebruikt voor wiskundige chronologie
 weergave_df = st.session_state.df_master.drop(columns=['Datum_Sorteer']) if 'Datum_Sorteer' in st.session_state.df_master else st.session_state.df_master
 
 edited_df = st.data_editor(
