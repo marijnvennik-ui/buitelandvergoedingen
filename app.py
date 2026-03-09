@@ -233,7 +233,7 @@ with st.expander("ℹ️ Hoe worden deze bedragen exact berekend? (Klik om uit t
     st.markdown("""
     ### 🆕 Nieuwe Regeling
     * **Doordeweeks:** Normale uren (N) gaan tegen **100%** (Normaal tarief). Overuren (O) gaan tegen **167%** (Bijzonder tarief).
-    * **Weekend:** Alle uren in het weekend tellen voor **211%** (Bijzonder tarief).
+    * **Weekend:** Alle uren in het weekend tellen voor **211%** en worden belast tegen het **Bijzonder tarief**.
     * **Dagvergoeding:** Je ontvangt standaard een vaste, **Netto** vergoeding bovenop elke gewerkte dag.
     * **Reistijd (R):** Wordt berekend en netto opgeteld.
 
@@ -242,9 +242,9 @@ with st.expander("ℹ️ Hoe worden deze bedragen exact berekend? (Klik om uit t
     ### 🏛️ Oude Regeling
     * **Doordeweeks (Normaal):** Reguliere uren (N) gaan tegen **130%** (Normaal tarief).
     * **Doordeweeks (Overwerk):** Overuren (O) tikken aan tegen **167%** (Bijzonder tarief).
-    * **Weekend (Gewerkt):** Een weekenduur levert **211%** op.
-    * **Vangnet Weekend:** Geen uren gemaakt, maar wel van huis? Dan is de basis **75% van 8 uur**. 
-    * **Overnachting:** Bovenop doordeweekse/weekend dagen ontving je een **bruto** overnachtingsvergoeding (Bijzonder tarief).
+    * **Weekend (Gewerkt):** Een weekenduur levert **211%** op en wordt net als in de nieuwe regeling belast tegen het **Bijzonder tarief**.
+    * **Vangnet Weekend:** Geen uren gemaakt, maar wel van huis? Dan is de basis **75% van 8 uur** (Bijzonder tarief). 
+    * **Overnachting:** Bovenop doordeweekse/weekend dagen ontving je een bruto overnachtingsvergoeding (Bijzonder tarief).
 
     ---
 
