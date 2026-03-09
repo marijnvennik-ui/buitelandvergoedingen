@@ -309,4 +309,13 @@ st.dataframe(df_resultaat.style.format({
 
 df_resultaat['Grafiek_Label'] = df_resultaat['Dag']
 
-fig, ax = plt.subplots(figsize=(max(10
+fig, ax = plt.subplots(figsize=(max(10, len(df_resultaat) * 0.5), 4))
+x = np.arange(len(df_resultaat['Grafiek_Label']))
+width = 0.35
+ax.bar(x - width/2, df_resultaat['Oud (Netto)'], width, label='Oud', color='#FF4B4B')
+ax.bar(x + width/2, df_resultaat['Nieuw (Netto)'], width, label='Nieuw', color='#00CC96')
+ax.set_xticks(x)
+ax.set_xticklabels(df_resultaat['Grafiek_Label'], rotation=45, ha='right', fontsize=9)
+ax.legend()
+plt.tight_layout()
+st.pyplot(fig)
