@@ -280,7 +280,7 @@ with st.sidebar:
     
     st.divider()
     st.header("🏛️ Oude Regeling (Basis 2023)")
-    basis_dag_2023 = st.number_input("Oude referentie Dagvergoeding (€)", value=42.00, step=0.50, help="Dit was de nieuwe vergoeding toen de oude regeling werd afgeschaft.")
+    basis_dag_2023 = st.number_input("Oude referentie Dagvergoeding (€)", value=40.00, step=0.50, help="Dit was de nieuwe vergoeding toen de oude regeling werd afgeschaft.")
     basis_ovn_week = st.number_input("Basis Overnachting week (Bruto)", value=21.00, step=0.50)
     basis_ovn_weekend = st.number_input("Basis Overnachting weekend (Bruto)", value=28.00, step=0.50)
     
@@ -288,7 +288,6 @@ with st.sidebar:
     st.header("📈 Inflatiecorrectie")
     schaal_mee = st.toggle("Schaal Oude Regeling mee met CAO", value=True, help="Trekt de groei van de actuele dagvergoeding door naar de oude overnachtingsvergoedingen.")
     
-    # Initieer dataclass
     tarieven = Tarieven(
         basis_uurloon=basis_uurloon,
         belasting_normaal=belasting_normaal,
@@ -300,7 +299,6 @@ with st.sidebar:
         schaal_mee=schaal_mee
     )
     
-    # Toon live wat de waarden nu daadwerkelijk zijn in de rekensom
     if schaal_mee:
         st.success(f"""
         **Actueel gebruikte oude tarieven:**
