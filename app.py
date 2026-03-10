@@ -175,7 +175,7 @@ class ExcelParser:
                 val = str(df.iloc[rij_labels, col_idx]).upper().strip()
                 if val == 'N' or val.startswith('N ') or val.startswith('N-'): mapping[dag]["N"] = col_idx
                 elif val == 'O' or val.startswith('O ') or val.startswith('O-'): mapping[dag]["O"] = col_idx
-                elif val == 'R' or val.startswith('R ') or val.startswith('R-'): mapping[dag]["R"] = col_idx
+                elif val == 'R' or val.startswith('R ') or val.startswith('R-'): mapping[dag]["R"] = mapping[dag]["R"] = col_idx
 
         return rij_labels, mapping
 
@@ -272,6 +272,11 @@ with st.expander("ℹ️ Hoe worden deze bedragen exact berekend? (Klik om uit t
 with st.sidebar:
     st.header("⚙️ Salaris & Belasting")
     basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=24.50, step=0.10)
+    
+    # Direct het maandloon tonen op basis van 173,3 uur
+    maandloon_berekend = basis_uurloon * 173.3
+    st.info(f"💶 Berekend Bruto Maandloon: **€ {maandloon_berekend:,.2f}** *(o.b.v. 173,3 uur)*")
+    
     belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100
     
     st.divider()
