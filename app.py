@@ -15,15 +15,34 @@ class Tarieven:
     belasting_normaal: float
     belasting_bijzonder: float
     dagtarief_netto: float
-    ovn_week: float
-    ovn_weekend: float
+    
+    # Indexatie variabelen
+    basis_dagtarief_2023: float
+    basis_ovn_week: float
+    basis_ovn_weekend: float
+    schaal_mee: bool
     
     @property
     def maandsalaris(self) -> float:
         return self.basis_uurloon * 173.3
+        
+    @property
+    def actuele_ovn_week(self) -> float:
+        """Berekent de geïndexeerde oude week-vergoeding op basis van CAO stijging."""
+        if self.schaal_mee and self.basis_dagtarief_2023 > 0:
+            factor = self.dagtarief_netto / self.basis_dagtarief_2023
+            return self.basis_ovn_week * factor
+        return self.basis_ovn_week
+
+    @property
+    def actuele_ovn_weekend(self) -> float:
+        """Berekent de geïndexeerde oude weekend-vergoeding op basis van CAO stijging."""
+        if self.schaal_mee and self.basis_dagtarief_2023 > 0:
+            factor = self.dagtarief_netto / self.basis_dagtarief_2023
+            return self.basis_ovn_weekend * factor
+        return self.basis_ovn_weekend
 
 class Calculator:
-    """Verantwoordelijk voor alle gevectoriseerde berekeningen op een uren-DataFrame."""
     def __init__(self, tarieven: Tarieven):
         self.t = tarieven
 
@@ -36,7 +55,7 @@ class Calculator:
         uren_totaal = res['N'] + res['O']
         is_weekend = res['Dag'].str.contains('Zaterdag|Zondag', case=False, na=False)
         
-        # --- REISTIJD (Gevectoriseerd met Numpy) ---
+        # --- REISTIJD ---
         rt_uren = res['R'] / 60.0
         rt_doordeweeks = (np.minimum(rt_uren, 1.25) * 0.00607 * self.t.maandsalaris) + \
                          (np.maximum(0, rt_uren - 1.25) * 0.0097 * self.t.maandsalaris)
@@ -47,37 +66,34 @@ class Calculator:
         res['Reistijd (Netto)'] = rt_netto
         
         # ==========================================
-        # OUDE REGELING BEREKENING
+        # OUDE REGELING BEREKENING (Met schaalbare vergoedingen)
         # ==========================================
-        # Doordeweeks: N = 130% (Normaal belast), O = 167% (Bijzonder belast)
         oud_n_netto = res['N'] * (self.t.basis_uurloon * 1.30) * (1 - self.t.belasting_normaal)
         oud_o_netto = res['O'] * (self.t.basis_uurloon * 1.67) * (1 - self.t.belasting_bijzonder)
-        oud_ovn_netto = self.t.ovn_week * (1 - self.t.belasting_bijzonder)
+        
+        # Gebruik hier de actuele (eventueel geschaalde) overnachtingsvergoeding
+        oud_ovn_netto = self.t.actuele_ovn_week * (1 - self.t.belasting_bijzonder)
         netto_oud_week = oud_n_netto + oud_o_netto + oud_ovn_netto + rt_netto
                          
-        # Weekend: Alles 211% (Bijzonder belast). Bij 0 uren vangnet van 75% over 8 uur.
         bruto_oud_weekend = np.where(uren_totaal > 0, 
                                      uren_totaal * self.t.basis_uurloon * 2.11, 
                                      self.t.basis_uurloon * 8 * 0.75)
-        netto_oud_weekend = (bruto_oud_weekend + self.t.ovn_weekend) * (1 - self.t.belasting_bijzonder) + rt_netto
+        netto_oud_weekend = (bruto_oud_weekend + self.t.actuele_ovn_weekend) * (1 - self.t.belasting_bijzonder) + rt_netto
         
         res['Oud (Netto)'] = np.where(is_weekend, netto_oud_weekend, netto_oud_week)
 
         # ==========================================
         # NIEUWE REGELING BEREKENING
         # ==========================================
-        # Doordeweeks: N = 100% (Normaal belast), O = 167% (Bijzonder belast) + Netto Dagvergoeding
         nieuw_n_netto = res['N'] * self.t.basis_uurloon * (1 - self.t.belasting_normaal)
         nieuw_o_netto = res['O'] * (self.t.basis_uurloon * 1.67) * (1 - self.t.belasting_bijzonder)
         netto_nieuw_week = nieuw_n_netto + nieuw_o_netto + self.t.dagtarief_netto + rt_netto
         
-        # Weekend: Alles 211% (Bijzonder belast) + Netto Dagvergoeding
         nieuw_basis_weekend_netto = (uren_totaal * self.t.basis_uurloon * 2.11) * (1 - self.t.belasting_bijzonder)
         netto_nieuw_weekend = nieuw_basis_weekend_netto + self.t.dagtarief_netto + rt_netto
 
         res['Nieuw (Netto)'] = np.where(is_weekend, netto_nieuw_weekend, netto_nieuw_week)
         
-        # --- VERSCHIL ---
         res['Verschil'] = res['Nieuw (Netto)'] - res['Oud (Netto)']
         
         return res
@@ -228,7 +244,6 @@ class ExcelParser:
 st.set_page_config(page_title="Enterprise Urenvergelijker", layout="wide")
 st.title("📊 Multi-Week Urenvergelijker")
 
-# --- INFORMATIE BLOK ---
 with st.expander("ℹ️ Hoe worden deze bedragen exact berekend? (Klik om uit te klappen)"):
     st.markdown("""
     ### 🆕 Nieuwe Regeling
@@ -242,29 +257,58 @@ with st.expander("ℹ️ Hoe worden deze bedragen exact berekend? (Klik om uit t
     ### 🏛️ Oude Regeling
     * **Doordeweeks (Normaal):** Reguliere uren (N) gaan tegen **130%** (Normaal tarief).
     * **Doordeweeks (Overwerk):** Overuren (O) tikken aan tegen **167%** (Bijzonder tarief).
-    * **Weekend (Gewerkt):** Een weekenduur levert **211%** op en wordt net als in de nieuwe regeling belast tegen het **Bijzonder tarief**.
-    * **Vangnet Weekend:** Geen uren gemaakt, maar wel van huis? Dan is de basis **75% van 8 uur** (Bijzonder tarief). 
-    * **Overnachting:** Bovenop doordeweekse/weekend dagen ontving je een bruto overnachtingsvergoeding (Bijzonder tarief).
+    * **Weekend (Gewerkt):** Een weekenduur levert **211%** op (Bijzonder tarief).
+    * **Vangnet Weekend:** Geen uren gemaakt, maar wel van huis? Basis is **75% van 8 uur** (Bijzonder tarief). 
+    * **Overnachting:** Bruto overnachtingsvergoeding (Bijzonder tarief). *Kan via de zijbalk dynamisch meeschalen met de inflatie/CAO.*
 
     ---
 
     ### 🚗 Reistijd Formule (Identiek voor beide regelingen)
-    Reistijd is gekoppeld aan je *Berekende Maandsalaris* (Uurloon × 173.3 uur) en valt standaard onder het Bijzonder Belastingtarief.
-    * **Doordeweeks:** De eerste 1.25 uur (75 min) leveren **0.607%** van je maandsalaris per uur op. Alles daarboven tikt aan met **0.97%** per uur.
+    Reistijd is gekoppeld aan je *Berekende Maandsalaris* (Uurloon × 173.3 uur) en valt onder het Bijzonder Belastingtarief.
+    * **Doordeweeks:** De eerste 1.25 uur leveren **0.607%** van je maandsalaris per uur op. Alles daarboven tikt aan met **0.97%** per uur.
     * **Weekend:** Reistijd in het weekend levert lineair **1.21%** van je maandsalaris per uur op.
     """)
 
 with st.sidebar:
-    st.header("⚙️ Systeem Parameters")
+    st.header("⚙️ Salaris & Belasting")
+    basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=24.50, step=0.10)
+    belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100
+    
+    st.divider()
+    st.header("⚖️ Vergoedingen (Nieuw)")
+    dagtarief_netto = st.number_input("Actuele Netto dagvergoeding (€)", value=47.50, step=0.50)
+    
+    st.divider()
+    st.header("🏛️ Oude Regeling (Basis 2023)")
+    basis_dag_2023 = st.number_input("Oude referentie Dagvergoeding (€)", value=42.00, step=0.50, help="Dit was de nieuwe vergoeding toen de oude regeling werd afgeschaft.")
+    basis_ovn_week = st.number_input("Basis Overnachting week (Bruto)", value=21.00, step=0.50)
+    basis_ovn_weekend = st.number_input("Basis Overnachting weekend (Bruto)", value=28.00, step=0.50)
+    
+    st.divider()
+    st.header("📈 Inflatiecorrectie")
+    schaal_mee = st.toggle("Schaal Oude Regeling mee met CAO", value=True, help="Trekt de groei van de actuele dagvergoeding door naar de oude overnachtingsvergoedingen.")
+    
+    # Initieer dataclass
     tarieven = Tarieven(
-        basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=24.50, step=0.10),
-        belasting_normaal = st.slider("Belasting Normaal (%)", 0.0, 50.0, 37.0) / 100,
-        belasting_bijzonder = 0.505,
-        dagtarief_netto = st.number_input("Nieuwe Netto dagvergoeding (€)", value=50.0),
-        ovn_week = st.number_input("Oude Overnachting week (Bruto)", value=21.0),
-        ovn_weekend = st.number_input("Oude Overnachting weekend (Bruto)", value=28.0)
+        basis_uurloon=basis_uurloon,
+        belasting_normaal=belasting_normaal,
+        belasting_bijzonder=0.505,
+        dagtarief_netto=dagtarief_netto,
+        basis_dagtarief_2023=basis_dag_2023,
+        basis_ovn_week=basis_ovn_week,
+        basis_ovn_weekend=basis_ovn_weekend,
+        schaal_mee=schaal_mee
     )
-    st.info(f"Gehanteerd maandsalaris: € {tarieven.maandsalaris:,.2f}")
+    
+    # Toon live wat de waarden nu daadwerkelijk zijn in de rekensom
+    if schaal_mee:
+        st.success(f"""
+        **Actueel gebruikte oude tarieven:**
+        * Doordeweeks: **€ {tarieven.actuele_ovn_week:.2f}**
+        * Weekend: **€ {tarieven.actuele_ovn_weekend:.2f}**
+        """)
+    else:
+        st.info("De oude regeling gebruikt de strakke basisbedragen uit 2023.")
 
 uploaded_files = st.file_uploader("Upload Excel (.xlsx) exports", type="xlsx", accept_multiple_files=True)
 
