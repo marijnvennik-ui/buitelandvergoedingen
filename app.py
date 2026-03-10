@@ -16,7 +16,6 @@ class Tarieven:
     belasting_bijzonder: float
     dagtarief_netto: float
     
-    # Indexatie variabelen
     basis_dagtarief_2023: float
     basis_ovn_week: float
     basis_ovn_weekend: float
@@ -28,7 +27,6 @@ class Tarieven:
         
     @property
     def actuele_ovn_week(self) -> float:
-        """Berekent de geïndexeerde oude week-vergoeding op basis van CAO stijging."""
         if self.schaal_mee and self.basis_dagtarief_2023 > 0:
             factor = self.dagtarief_netto / self.basis_dagtarief_2023
             return self.basis_ovn_week * factor
@@ -36,7 +34,6 @@ class Tarieven:
 
     @property
     def actuele_ovn_weekend(self) -> float:
-        """Berekent de geïndexeerde oude weekend-vergoeding op basis van CAO stijging."""
         if self.schaal_mee and self.basis_dagtarief_2023 > 0:
             factor = self.dagtarief_netto / self.basis_dagtarief_2023
             return self.basis_ovn_weekend * factor
@@ -66,12 +63,11 @@ class Calculator:
         res['Reistijd (Netto)'] = rt_netto
         
         # ==========================================
-        # OUDE REGELING BEREKENING (Met schaalbare vergoedingen)
+        # OUDE REGELING BEREKENING
         # ==========================================
         oud_n_netto = res['N'] * (self.t.basis_uurloon * 1.30) * (1 - self.t.belasting_normaal)
         oud_o_netto = res['O'] * (self.t.basis_uurloon * 1.67) * (1 - self.t.belasting_bijzonder)
         
-        # Gebruik hier de actuele (eventueel geschaalde) overnachtingsvergoeding
         oud_ovn_netto = self.t.actuele_ovn_week * (1 - self.t.belasting_bijzonder)
         netto_oud_week = oud_n_netto + oud_o_netto + oud_ovn_netto + rt_netto
                          
@@ -175,7 +171,7 @@ class ExcelParser:
                 val = str(df.iloc[rij_labels, col_idx]).upper().strip()
                 if val == 'N' or val.startswith('N ') or val.startswith('N-'): mapping[dag]["N"] = col_idx
                 elif val == 'O' or val.startswith('O ') or val.startswith('O-'): mapping[dag]["O"] = col_idx
-                elif val == 'R' or val.startswith('R ') or val.startswith('R-'): mapping[dag]["R"] = mapping[dag]["R"] = col_idx
+                elif val == 'R' or val.startswith('R ') or val.startswith('R-'): mapping[dag]["R"] = col_idx
 
         return rij_labels, mapping
 
@@ -260,20 +256,12 @@ with st.expander("ℹ️ Hoe worden deze bedragen exact berekend? (Klik om uit t
     * **Weekend (Gewerkt):** Een weekenduur levert **211%** op (Bijzonder tarief).
     * **Vangnet Weekend:** Geen uren gemaakt, maar wel van huis? Basis is **75% van 8 uur** (Bijzonder tarief). 
     * **Overnachting:** Bruto overnachtingsvergoeding (Bijzonder tarief). *Kan via de zijbalk dynamisch meeschalen met de inflatie/CAO.*
-
-    ---
-
-    ### 🚗 Reistijd Formule (Identiek voor beide regelingen)
-    Reistijd is gekoppeld aan je *Berekende Maandsalaris* (Uurloon × 173.3 uur) en valt onder het Bijzonder Belastingtarief.
-    * **Doordeweeks:** De eerste 1.25 uur leveren **0.607%** van je maandsalaris per uur op. Alles daarboven tikt aan met **0.97%** per uur.
-    * **Weekend:** Reistijd in het weekend levert lineair **1.21%** van je maandsalaris per uur op.
     """)
 
 with st.sidebar:
     st.header("⚙️ Salaris & Belasting")
     basis_uurloon = st.number_input("Basis uurloon Bruto (€)", value=24.50, step=0.10)
     
-    # Direct het maandloon tonen op basis van 173,3 uur
     maandloon_berekend = basis_uurloon * 173.3
     st.info(f"💶 Berekend Bruto Maandloon: **€ {maandloon_berekend:,.2f}** *(o.b.v. 173,3 uur)*")
     
@@ -285,13 +273,13 @@ with st.sidebar:
     
     st.divider()
     st.header("🏛️ Oude Regeling (Basis 2023)")
-    basis_dag_2023 = st.number_input("Oude referentie Dagvergoeding (€)", value=40.00, step=0.50, help="Dit was de nieuwe vergoeding toen de oude regeling werd afgeschaft.")
+    basis_dag_2023 = st.number_input("Oude referentie Dagvergoeding (€)", value=40.00, step=0.50)
     basis_ovn_week = st.number_input("Basis Overnachting week (Bruto)", value=21.00, step=0.50)
     basis_ovn_weekend = st.number_input("Basis Overnachting weekend (Bruto)", value=28.00, step=0.50)
     
     st.divider()
     st.header("📈 Inflatiecorrectie")
-    schaal_mee = st.toggle("Schaal Oude Regeling mee met CAO", value=True, help="Trekt de groei van de actuele dagvergoeding door naar de oude overnachtingsvergoedingen.")
+    schaal_mee = st.toggle("Schaal Oude Regeling mee met CAO", value=True)
     
     tarieven = Tarieven(
         basis_uurloon=basis_uurloon,
@@ -303,54 +291,74 @@ with st.sidebar:
         basis_ovn_weekend=basis_ovn_weekend,
         schaal_mee=schaal_mee
     )
+
+# --- TABS VOOR INVOER ---
+tab1, tab2 = st.tabs(["📁 Excel Auto-Scan", "✍️ Handmatige Invoer"])
+
+with tab1:
+    uploaded_files = st.file_uploader("Upload Excel (.xlsx) exports", type="xlsx", accept_multiple_files=True)
     
-    if schaal_mee:
-        st.success(f"""
-        **Actueel gebruikte oude tarieven:**
-        * Doordeweeks: **€ {tarieven.actuele_ovn_week:.2f}**
-        * Weekend: **€ {tarieven.actuele_ovn_weekend:.2f}**
-        """)
-    else:
-        st.info("De oude regeling gebruikt de strakke basisbedragen uit 2023.")
+    if uploaded_files:
+        if st.button("Verwerk Excel Bestanden", type="primary"):
+            try:
+                parser = ExcelParser()
+                alle_bestanden_data = []
+                
+                for file in uploaded_files:
+                    df_parsed = parser.parse(file)
+                    alle_bestanden_data.append(df_parsed)
+                    
+                df_gecombineerd = pd.concat(alle_bestanden_data, ignore_index=True)
+                
+                df_agg = df_gecombineerd.groupby(['Periode', 'Dag', 'Datum_Sorteer'], dropna=False)[['N', 'O', 'R']].sum().reset_index()
+                df_agg = df_agg.sort_values(by=['Datum_Sorteer'])
+                
+                st.session_state.df_master = df_agg
+                st.success("Data succesvol ingeladen!")
+            except ValueError as e:
+                st.error("Bestand Parsing Mislukt.")
+                st.warning(str(e))
 
-uploaded_files = st.file_uploader("Upload Excel (.xlsx) exports", type="xlsx", accept_multiple_files=True)
+with tab2:
+    st.write("Vul hier zelf een begin- en einddatum in om een lege urentabel te genereren.")
+    col_d1, col_d2 = st.columns(2)
+    start_datum = col_d1.date_input("Startdatum", value=datetime.date.today() - datetime.timedelta(days=datetime.date.today().weekday()))
+    eind_datum = col_d2.date_input("Einddatum", value=datetime.date.today() + datetime.timedelta(days=6 - datetime.date.today().weekday()))
+    
+    if st.button("Genereer Invoertabel", type="primary"):
+        if start_datum > eind_datum:
+            st.error("De startdatum mag niet na de einddatum liggen.")
+        else:
+            date_range = pd.date_range(start=start_datum, end=eind_datum)
+            dagen_nl = {0: "Maandag", 1: "Dinsdag", 2: "Woensdag", 3: "Donderdag", 4: "Vrijdag", 5: "Zaterdag", 6: "Zondag"}
+            
+            nieuwe_data = []
+            for d in date_range:
+                week_nr = d.isocalendar()[1]
+                jaar = d.isocalendar()[0]
+                dag_naam = dagen_nl[d.weekday()]
+                
+                nieuwe_data.append({
+                    "Periode": f"{jaar} - Week {week_nr}",
+                    "Dag": f"{dag_naam} {d.strftime('%d-%m-%Y')}",
+                    "Datum_Sorteer": d,
+                    "N": 0.0,
+                    "O": 0.0,
+                    "R": 0.0
+                })
+                
+            st.session_state.df_master = pd.DataFrame(nieuwe_data)
+            st.success("Lege tabel aangemaakt! Vul je uren in bij de tabel hieronder.")
 
-if uploaded_files:
-    try:
-        parser = ExcelParser()
-        alle_bestanden_data = []
-        
-        for file in uploaded_files:
-            df_parsed = parser.parse(file)
-            alle_bestanden_data.append(df_parsed)
-            
-        df_gecombineerd = pd.concat(alle_bestanden_data, ignore_index=True)
-        
-        projecten_lijst = df_gecombineerd['Project'].unique().tolist()
-        st.success(f"{len(uploaded_files)} bestand(en) uitgelezen. {len(projecten_lijst)} projecten gevonden.")
-        
-        geselecteerd = st.multiselect("Selecteer Projecten om te filteren:", options=projecten_lijst, default=projecten_lijst)
-        
-        if geselecteerd:
-            df_gefilterd = df_gecombineerd[df_gecombineerd['Project'].isin(geselecteerd)]
-            
-            df_agg = df_gefilterd.groupby(['Periode', 'Dag', 'Datum_Sorteer'], dropna=False)[['N', 'O', 'R']].sum().reset_index()
-            df_agg = df_agg.sort_values(by=['Datum_Sorteer'])
-            
-            st.session_state.df_master = df_agg
-            
-    except ValueError as e:
-        st.error("Bestand Parsing Mislukt.")
-        st.warning(str(e))
-        st.stop()
-
+# --- DATA EDITOR & REKENMACHINE ---
 if 'df_master' not in st.session_state:
     st.session_state.df_master = pd.DataFrame([
         {"Periode": "-", "Dag": d, "Datum_Sorteer": None, "N": 0.0, "O": 0.0, "R": 0.0} 
         for d in ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
     ])
 
-st.subheader("1. Urendata & Handmatige Correctie")
+st.divider()
+st.subheader("1. Urendata Invullen & Corrigeren")
 weergave_df = st.session_state.df_master.drop(columns=['Datum_Sorteer']) if 'Datum_Sorteer' in st.session_state.df_master else st.session_state.df_master
 
 edited_df = st.data_editor(
@@ -368,6 +376,7 @@ edited_df = st.data_editor(
 rekenmachine = Calculator(tarieven)
 df_resultaat = rekenmachine.bereken_alles(edited_df)
 
+# --- DASHBOARD ---
 st.divider()
 tot_nieuw = df_resultaat['Nieuw (Netto)'].sum()
 tot_oud = df_resultaat['Oud (Netto)'].sum()
@@ -386,6 +395,7 @@ st.dataframe(df_resultaat.style.format({
     "Verschil": "€ {:.2f}"
 }).background_gradient(subset=['Verschil'], cmap='RdYlGn').hide(axis="index"), use_container_width=True)
 
+# --- GRAFIEK ---
 df_resultaat['Grafiek_Label'] = df_resultaat['Dag']
 
 fig, ax = plt.subplots(figsize=(max(10, len(df_resultaat) * 0.5), 4))
@@ -398,3 +408,15 @@ ax.set_xticklabels(df_resultaat['Grafiek_Label'], rotation=45, ha='right', fonts
 ax.legend()
 plt.tight_layout()
 st.pyplot(fig)
+
+# --- EXPORT FUNCTIE ---
+st.divider()
+st.subheader("📥 Exporteer Resultaten")
+csv_data = df_resultaat.to_csv(index=False, sep=';', decimal=',')
+st.download_button(
+    label="Download Tabel als CSV (Excel)",
+    data=csv_data,
+    file_name=f"Urenvergelijker_Export_{datetime.datetime.now().strftime('%Y%m%d')}.csv",
+    mime="text/csv",
+    type="primary"
+)
